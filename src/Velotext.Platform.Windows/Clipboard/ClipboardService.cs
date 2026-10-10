@@ -29,6 +29,9 @@ public enum PasteOutcome
 
     /// <summary>The user clicked or changed windows before the paste keystroke, so it was not sent.</summary>
     Cancelled = 3,
+
+    /// <summary>An earlier paste is not confirmed yet, so this one was not started (a late read could belong to either).</summary>
+    Waiting = 4,
 }
 
 /// <summary>
@@ -92,10 +95,39 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
         ArgumentNullException.ThrowIfNull(payload);
         return _thread.InvokeAsync(() =>
         {
-            // If an earlier paste still waits to restore, the clipboard holds that phrase, not the user's
-            // content. Reuse the earlier snapshot, which is the user's real clipboard.
-            var snapshot = _session is { ReplacedByOther: false } pending ? pending.Snapshot : Capture();
-            if (snapshot is null || !TryOpen())
+            ClipboardSnapshot? snapshot = null;
+            for (var attempt = 0; attempt < 2 && snapshot is null; attempt++)
+            {
+                // If an earlier paste still waits to restore, the clipboard holds that phrase, not the user's
+                // content. Reuse the earlier snapshot, which is the user's real clipboard.
+                var pending = _session is { ReplacedByOther: false } current ? current : null;
+                uint sequence = 0;
+                var saved = pending?.Snapshot ?? Capture(out sequence);
+                if (saved is null || !TryOpen())
+                {
+                    return null;
+                }
+
+                // Opening may have waited; check that nobody changed the clipboard in between. If someone
+                // did, close and save the new content instead of overwriting it.
+                var unchanged = pending is null
+                    ? NativeMethods.GetClipboardSequenceNumber() == sequence
+                    : !pending.ReplacedByOther && NativeMethods.GetClipboardOwner() == _thread.WindowHandle;
+                if (unchanged)
+                {
+                    snapshot = saved;
+                }
+                else
+                {
+                    NativeMethods.CloseClipboard();
+                    if (pending is not null)
+                    {
+                        pending.MarkReplaced();
+                    }
+                }
+            }
+
+            if (snapshot is null)
             {
                 return null;
             }
@@ -233,6 +265,15 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
 
         try
         {
+            // Opening may have waited and answered messages. If another app put new content on the
+            // clipboard meanwhile, it stays: restoring would overwrite the user's newer copy.
+            if (session.ReplacedByOther || NativeMethods.GetClipboardOwner() != _thread.WindowHandle)
+            {
+                session.MarkReplaced();
+                EndSession(session);
+                return true;
+            }
+
             // The session stays current until the clipboard is open, so render requests are answered meanwhile.
             EndSession(session);
             EmptyAsOwner();
@@ -329,9 +370,10 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
 
         // Someone read the phrase. Usually the target, or a helper process of it (browsers and store apps
         // read from another process). Clipboard monitors skip the content because of the privacy flags.
-        // A reader may open the clipboard without a window; the read still counts.
+        // A reader may open the clipboard without a window; the read still counts. A read before the paste
+        // keystroke cannot be the paste, so it does not confirm it (the paste then counts as unconfirmed).
         var requester = NativeMethods.GetOpenClipboardWindow();
-        if (requester != _thread.WindowHandle)
+        if (requester != _thread.WindowHandle && session.PasteSent)
         {
             session.MarkConsumed(requester);
         }
@@ -435,8 +477,9 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
         return false;
     }
 
-    private unsafe ClipboardSnapshot? Capture()
+    private unsafe ClipboardSnapshot? Capture(out uint sequence)
     {
+        sequence = 0;
         if (!TryOpen())
         {
             return null;
@@ -444,6 +487,7 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
 
         try
         {
+            sequence = NativeMethods.GetClipboardSequenceNumber();
             var formats = new List<(uint, byte[])>();
             long total = 0;
             uint format = 0;
@@ -559,6 +603,7 @@ public sealed class PasteSession
 {
     private readonly TaskCompletionSource<nint> _consumed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _replaced;
+    private volatile bool _pasteSent;
 
     internal PasteSession(ClipboardPayload payload, uint targetProcessId, ClipboardSnapshot snapshot)
     {
@@ -578,6 +623,12 @@ public sealed class PasteSession
 
     /// <summary>True when another application replaced the clipboard; it must not be restored then.</summary>
     public bool ReplacedByOther => _replaced;
+
+    /// <summary>True once the paste keystroke was sent; only reads after it confirm the paste.</summary>
+    public bool PasteSent => _pasteSent;
+
+    /// <summary>Marks the paste keystroke as sent. Call right before sending it.</summary>
+    public void MarkPasteSent() => _pasteSent = true;
 
     /// <summary>Completes with the reading window when the target reads the phrase.</summary>
     public Task<nint> Consumed => _consumed.Task;

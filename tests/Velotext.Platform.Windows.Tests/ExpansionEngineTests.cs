@@ -372,4 +372,59 @@ public sealed class ExpansionEngineTests : IDisposable
 
         Assert.Contains("replay 1", _injector.Calls);
     }
+
+    [Fact]
+    public async Task An_operation_the_sequencer_gave_up_on_types_nothing_more()
+    {
+        _sequencer.OperationTimeout = TimeSpan.FromMilliseconds(1);
+        _system.HeldKeys[0xA0] = true;
+        await Type("TWOX");
+        await Task.Delay(20, TestContext.Current.CancellationToken);
+        await _gateway.InvokeAsync(sequencer =>
+        {
+            sequencer.Tick();
+            return 0;
+        });
+        _system.HeldKeys.TryRemove(0xA0, out _);
+        await WaitForCompletion();
+
+        Assert.DoesNotContain(_injector.Calls, call => call.StartsWith("backspace", StringComparison.Ordinal));
+        Assert.Empty(_clipboard.Pasted);
+        Assert.Equal(ExpansionNoticeKind.Expired, Assert.Single(_host.Notices).Kind);
+    }
+
+    [Fact]
+    public async Task The_delimiter_is_not_typed_into_a_window_the_user_moved_to()
+    {
+        await Type("brb ");
+        await WaitUntil(() => _injector.Calls.Contains("chord 11+56"));
+        _system.Target = new ForegroundTarget(200, 99, 98);
+        await WaitForCompletion();
+
+        Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
+        Assert.Equal(ExpansionNoticeKind.DelimiterSkipped, Assert.Single(_host.Notices).Kind);
+        Assert.Equal([_plain.Id], _host.Inserted);
+    }
+
+    [Fact]
+    public async Task A_second_paste_waits_for_an_unconfirmed_first_one_and_types_the_trigger_back()
+    {
+        _clipboard.Mode = FakeClipboard.Behaviour.Ignore;
+        await Type("TWOX");
+        await WaitForCompletion();
+        Assert.Equal(ExpansionNoticeKind.PasteNotConfirmed, Assert.Single(_host.Notices).Kind);
+
+        _clipboard.Mode = FakeClipboard.Behaviour.Consume;
+        await Type(" TWOX");
+        await WaitForCompletion();
+
+        // The first phrase is still on the clipboard, so a read now could belong to either paste.
+        Assert.Single(_clipboard.Pasted);
+        Assert.Equal(ExpansionNoticeKind.TargetBusy, _host.Notices.Last().Kind);
+        Assert.True(_host.Notices.Last().TriggerRestored);
+        Assert.EndsWith("type 'TWO'", string.Join("|", _injector.Calls.SkipLast(1)), StringComparison.Ordinal);
+
+        _system.Target = new ForegroundTarget(200, 99, 98);
+        await WaitUntil(() => _clipboard.Restores == 1);
+    }
 }

@@ -57,7 +57,9 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
 
         var dead = _pendingDeadKey;
         _pendingDeadKey = '\0';
-        return dead != '\0' && meaning is { Kind: KeyMeaningKind.Text, Text: { } text } ? KeyMeaning.ForText(Compose(dead, text)) : meaning;
+        return dead != '\0' && meaning is { Kind: KeyMeaningKind.Text, Text: { } text }
+            ? KeyMeaning.ForText(Compose(dead, text)) with { AfterDeadKey = true }
+            : meaning;
     }
 
     /// <summary>

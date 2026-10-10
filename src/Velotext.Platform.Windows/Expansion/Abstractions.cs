@@ -36,6 +36,9 @@ public interface ISequencerHost
     /// </summary>
     long ContextGeneration { get; }
 
+    /// <summary>The Shift, Ctrl and Alt keys the user physically holds, per side; re-sent and replayed input ends in this state.</summary>
+    Input.ModifierSides HeldModifiers { get; }
+
     /// <summary>Runs an action against the sequencer on its thread.</summary>
     /// <param name="action">The action.</param>
     void Post(Action<InputSequencer> action);

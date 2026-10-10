@@ -28,21 +28,21 @@ public sealed class InputInjectorTests
     [Fact]
     public void Shift_enter_is_resent_with_shift_even_after_shift_was_released()
     {
-        var inputs = InputInjector.BuildResend(Stroke(VkReturn, KeyStrokeAttributes.Shift), KeyStrokeAttributes.None);
+        var inputs = InputInjector.BuildResend(Stroke(VkReturn, KeyStrokeAttributes.Shift), ModifierSides.None, ModifierSides.None);
 
-        Assert.Equal(["10 down own", "0D down own", "10 up own", "0D up own"], inputs.Select(Describe));
+        Assert.Equal(["A0 down own", "0D down own", "0D up own", "A0 up own"], inputs.Select(Describe));
     }
 
     [Fact]
     public void Resend_without_a_modifier_change_is_just_the_key()
     {
-        var inputs = InputInjector.BuildResend(Stroke(VkA), KeyStrokeAttributes.None);
+        var inputs = InputInjector.BuildResend(Stroke(VkA), ModifierSides.None, ModifierSides.None);
 
         Assert.Equal(["41 down own", "41 up own"], inputs.Select(Describe));
     }
 
     [Fact]
-    public void Replay_restores_shift_and_altgr_and_puts_the_current_state_back()
+    public void Replay_restores_shift_and_altgr_and_ends_as_the_keyboard_is()
     {
         KeyStroke[] keys =
         [
@@ -51,24 +51,44 @@ public sealed class InputInjectorTests
             Stroke(0x32, KeyStrokeAttributes.Control | KeyStrokeAttributes.Alt),
         ];
 
-        var (inputs, ends) = InputInjector.BuildReplay(keys, KeyStrokeAttributes.None);
+        var (inputs, ends) = InputInjector.BuildReplay(keys, ModifierSides.None, ModifierSides.None);
 
         Assert.Equal(
             [
-                "10 down own", "41 down replay", "10 up own",
+                "A0 down own", "41 down replay",
                 "41 up replay",
-                "11 down own", "12 down own", "32 down replay", "11 up own", "12 up own",
+                "A0 up own", "A2 down own", "A4 down own", "32 down replay",
+                "A2 up own", "A4 up own",
             ],
             inputs.Select(Describe));
-        Assert.Equal([3, 4, 9], ends);
+        Assert.Equal([2, 3, 7], ends);
     }
 
     [Fact]
-    public void Replay_lifts_a_held_shift_for_a_key_typed_without_it()
+    public void A_lagging_shift_state_never_leaves_shift_pressed()
     {
-        var (inputs, _) = InputInjector.BuildReplay([Stroke(VkA)], KeyStrokeAttributes.Shift);
+        // Windows still reports Shift down for a moment after its release; the batch must not press it again.
+        var (inputs, _) = InputInjector.BuildReplay([Stroke(0x45)], ModifierSides.LeftShift, ModifierSides.None);
 
-        Assert.Equal(["10 up own", "41 down replay", "10 down own"], inputs.Select(Describe));
+        Assert.Equal(["A0 up own", "45 down replay"], inputs.Select(Describe));
+    }
+
+    [Fact]
+    public void A_held_right_shift_is_lifted_for_a_key_typed_without_it_and_pressed_again_after()
+    {
+        var (inputs, _) = InputInjector.BuildReplay([Stroke(VkA)], ModifierSides.RightShift, ModifierSides.RightShift);
+
+        Assert.Equal(["A1 up own", "41 down replay", "A1 down own"], inputs.Select(Describe));
+    }
+
+    [Fact]
+    public void Right_ctrl_and_right_alt_are_sent_as_extended_keys()
+    {
+        var inputs = InputInjector.BuildResend(Stroke(VkA), ModifierSides.None, ModifierSides.RightControl | ModifierSides.RightAlt);
+
+        var extended = inputs.Where(i => i.Data.Keyboard.VirtualKey is 0xA3 or 0xA5).ToList();
+        Assert.Equal(2, extended.Count);
+        Assert.All(extended, i => Assert.NotEqual(0u, i.Data.Keyboard.Flags & NativeMethods.KeyeventfExtendedKey));
     }
 
     [Fact]
@@ -76,7 +96,8 @@ public sealed class InputInjectorTests
     {
         var (inputs, _) = InputInjector.BuildReplay(
             [Stroke(0xA0), Stroke(VkA, KeyStrokeAttributes.Shift), Stroke(0xA0, KeyStrokeAttributes.KeyUp)],
-            KeyStrokeAttributes.None);
+            ModifierSides.None,
+            ModifierSides.None);
 
         Assert.Equal(["A0 down replay", "41 down replay", "A0 up replay"], inputs.Select(Describe));
     }
@@ -86,11 +107,10 @@ public sealed class InputInjectorTests
     {
         var packet = new KeyStroke(InputInjector.VkPacket, 'é', KeyStrokeAttributes.Shift, KeyOrigin.Replay);
 
-        var (inputs, _) = InputInjector.BuildReplay([packet, packet with { Flags = KeyStrokeAttributes.KeyUp }], KeyStrokeAttributes.None);
+        var (inputs, _) = InputInjector.BuildReplay([packet, packet with { Flags = KeyStrokeAttributes.KeyUp }], ModifierSides.None, ModifierSides.None);
 
         Assert.Equal(["unicode é down replay", "unicode é up replay"], inputs.Select(Describe));
     }
-
     [Theory]
     [InlineData('^', "e", "\u00EA")]
     [InlineData('\u00B4', "e", "\u00E9")]

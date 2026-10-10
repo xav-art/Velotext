@@ -552,4 +552,74 @@ public sealed class InputSequencerTests
         var replay = _sink.Replays[1];
         Assert.Equal(["a down", "a up", "b down"], replay.Select(k => $"{(char)k.ScanCode} {(k.IsKeyUp ? "up" : "down")}"));
     }
+
+    [Fact]
+    public void Timeout_tells_the_sink_which_operation_expired()
+    {
+        TypeText("TWOX");
+        var id = _sink.Expansions[0].OperationId;
+
+        _time.Advance(TimeSpan.FromSeconds(6));
+        _sequencer.Tick();
+
+        Assert.Equal([id], _sink.Expired);
+    }
+
+    [Fact]
+    public void A_replayed_key_swallowed_by_another_program_does_not_hold_up_the_rest()
+    {
+        TypeText("TWOX");
+        _sequencer.OnKey(Keys.Down('a'));
+        _sequencer.OnKey(Keys.Down('b'));
+        _sequencer.CompleteOperation(_sink.Expansions[0].OperationId, OperationOutcome.None);
+
+        // 'a' never comes back; 'b' does, so the queue skips 'a' and the keyboard is free again.
+        Assert.Equal(KeyDecision.Pass, _sequencer.OnKey(Keys.Down('b', KeyOrigin.Replay)));
+
+        Assert.Equal(1, _sequencer.DroppedKeyCount);
+        Assert.False(_sequencer.IsHolding);
+        Assert.Equal(KeyDecision.Pass, Tap('c'));
+    }
+
+    [Fact]
+    public void Click_while_keys_wait_behind_a_replay_discards_them()
+    {
+        TypeText("TWOX");
+        _sequencer.OnKey(Keys.Down('a'));
+        _sequencer.CompleteOperation(_sink.Expansions[0].OperationId, OperationOutcome.None);
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Down('b')));
+
+        _sequencer.OnContextLost();
+        _sequencer.OnKey(Keys.Down('a', KeyOrigin.Replay));
+
+        // 'b' was typed before the click but could only go out after it, at the new caret.
+        Assert.Equal([(0L, 1)], _sink.Discards);
+        Assert.Single(_sink.Replays);
+        Assert.False(_sequencer.IsHolding);
+    }
+
+    [Fact]
+    public void A_returning_replay_does_not_release_a_new_physical_press_of_the_same_key()
+    {
+        TypeText("TWOX");
+        _sequencer.OnKey(Keys.Down('k'));
+        _sequencer.CompleteOperation(_sink.Expansions[0].OperationId, OperationOutcome.None);
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Down('k')));
+
+        Assert.Equal(KeyDecision.Pass, _sequencer.OnKey(Keys.Down('k', KeyOrigin.Replay)));
+
+        // The physical release waits behind the physical press it belongs to.
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Up('k')));
+    }
+
+    [Fact]
+    public void A_key_that_completes_a_dead_key_never_completes_a_trigger()
+    {
+        TypeText("TWO");
+
+        Assert.Equal(KeyDecision.Pass, _sequencer.OnKey(Keys.DownVk(FakeTranslator.AfterDeadKey)));
+
+        Assert.Empty(_sink.Expansions);
+        Assert.Equal("TWOX", _matcher.BufferText);
+    }
 }

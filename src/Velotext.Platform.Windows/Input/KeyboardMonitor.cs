@@ -45,8 +45,8 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     private int _lastWatchdogReinstall = Environment.TickCount - ReinstallIntervalMilliseconds;
     private bool _watchdogLogged;
 
-    // Left and right Shift, Ctrl and Alt (VK 0xA0 to 0xA5) as the user physically holds them.
-    private readonly bool[] _physicalModifiers = new bool[6];
+    // Left and right Shift, Ctrl and Alt as the user physically holds them (ModifierSides bits).
+    private int _physicalModifiers;
 
     /// <summary>Starts the hook thread and installs the hooks.</summary>
     /// <param name="sink">Receives expansion, undo and replay requests (on the hook thread).</param>
@@ -80,6 +80,9 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
 
     /// <inheritdoc />
     public long ContextGeneration => Interlocked.Read(ref _contextGeneration);
+
+    /// <inheritdoc />
+    public ModifierSides HeldModifiers => (ModifierSides)Volatile.Read(ref _physicalModifiers);
 
     /// <summary>Replaces the autotext triggers. Safe from any thread; takes effect on the next key.</summary>
     /// <param name="index">The new trigger index.</param>
@@ -152,11 +155,7 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
             0,
             NativeMethods.WineventOutOfContext);
         _sequencer!.SuppressMatching = ForegroundTarget.Current().IsOwnProcess;
-        for (var i = 0; i < _physicalModifiers.Length; i++)
-        {
-            _physicalModifiers[i] = (NativeMethods.GetAsyncKeyState(VkLShift + i) & 0x8000) != 0;
-        }
-
+        ResyncModifiers();
         _lastHookCall = (uint)Environment.TickCount;
         LogHooksInstalled(_logger, _mouseHook != 0, _foregroundHook != 0);
     }
@@ -198,14 +197,26 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
                 _lastHookCall = (uint)Environment.TickCount;
                 var up = (data->Flags & NativeMethods.LlkhfUp) != 0;
                 var vk = (int)data->VirtualKey;
-                if (origin == KeyOrigin.Physical && vk is >= VkLShift and <= VkLShift + 5)
+                if (origin == KeyOrigin.Physical)
                 {
-                    _physicalModifiers[vk - VkLShift] = !up;
+                    // With nothing held, Windows' own key state is exact; it corrects releases the hook never
+                    // saw (the secure desktop after Ctrl+Alt+Del, an elevated window). While keys are held it
+                    // lags behind, so the tracked state is kept then.
+                    if (!sequencer.IsHolding)
+                    {
+                        ResyncModifiers();
+                    }
+
+                    if (vk is >= VkLShift and <= VkLShift + 5)
+                    {
+                        var bit = 1 << (vk - VkLShift);
+                        Volatile.Write(ref _physicalModifiers, up ? _physicalModifiers & ~bit : _physicalModifiers | bit);
+                    }
                 }
 
                 var attributes = (up ? KeyStrokeAttributes.KeyUp : KeyStrokeAttributes.None)
                     | ((data->Flags & NativeMethods.LlkhfExtended) != 0 ? KeyStrokeAttributes.Extended : KeyStrokeAttributes.None)
-                    | HeldModifiers();
+                    | HeldModifierFlags();
                 var stroke = new KeyStroke(vk, (int)data->ScanCode, attributes, origin);
                 if (sequencer.OnKey(stroke) == KeyDecision.Swallow)
                 {
@@ -222,10 +233,15 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         return NativeMethods.CallNextHookEx(0, code, wParam, lParam);
     }
 
-    private KeyStrokeAttributes HeldModifiers() =>
-        (_physicalModifiers[0] || _physicalModifiers[1] ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
-        | (_physicalModifiers[2] || _physicalModifiers[3] ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
-        | (_physicalModifiers[4] || _physicalModifiers[5] ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
+    private KeyStrokeAttributes HeldModifierFlags()
+    {
+        var held = _physicalModifiers;
+        return ((held & 0b000011) != 0 ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
+            | ((held & 0b001100) != 0 ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
+            | ((held & 0b110000) != 0 ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
+    }
+
+    private void ResyncModifiers() => Volatile.Write(ref _physicalModifiers, (int)InputInjector.CurrentModifiers());
 
     /// <summary>The caret may have moved: tell the sequencer and let running operations see the change.</summary>
     private void LoseContext(InputSequencer sequencer)
@@ -297,13 +313,15 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
 
         // Tick counts wrap around; unsigned subtraction keeps the comparison right.
         var silentFor = unchecked((int)(info.Time - _lastHookCall));
-        if (silentFor < SilentHookMilliseconds || unchecked(Environment.TickCount - _lastWatchdogReinstall) < ReinstallIntervalMilliseconds)
+        if (silentFor < SilentHookMilliseconds
+            || unchecked(Environment.TickCount - _lastWatchdogReinstall) < ReinstallIntervalMilliseconds
+            || _sequencer is not { IsHolding: false }
+            || ForegroundIsOutOfReach())
         {
             return;
         }
 
-        // Input happened but the hooks were not called. Windows removed them, or an elevated window has
-        // focus (hooks do not see its input). Reinstalling is harmless in both cases.
+        // Input happened but the hooks were not called, and nothing explains it: Windows removed them.
         _lastWatchdogReinstall = Environment.TickCount;
         RemoveHooks();
         InstallHooks();
@@ -316,6 +334,31 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Keyboard hook installed (mouse hook: {MouseHook}, focus tracking: {ForegroundHook}).")]
     private static partial void LogHooksInstalled(ILogger logger, bool mouseHook, bool foregroundHook);
+
+    /// <summary>
+    /// True when the focused window's input never reaches the hook anyway: an app running as administrator,
+    /// or a remote desktop client with its own keyboard hook. Reinstalling then would only change the order
+    /// of hooks, so the watchdog leaves them alone.
+    /// </summary>
+    private static unsafe bool ForegroundIsOutOfReach()
+    {
+        var window = NativeMethods.GetForegroundWindow();
+        if (window == 0)
+        {
+            return true;
+        }
+
+        var buffer = stackalloc char[64];
+        var length = NativeMethods.GetClassNameW(window, buffer, 64);
+        var windowClass = length > 0 ? new string(buffer, 0, length) : string.Empty;
+        if (windowClass is "TscShellContainerClass" or "Transparent Windows Client" or "CtxICADisp")
+        {
+            return true;
+        }
+
+        NativeMethods.GetWindowThreadProcessId(window, out var processId);
+        return ProcessInfo.IsElevatedOrHidden(processId);
+    }
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The keyboard hook stopped receiving input; Velotext reinstalled it. Later reinstalls are not logged.")]
     private static partial void LogWatchdogReinstall(ILogger logger);

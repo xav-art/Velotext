@@ -28,6 +28,55 @@ public readonly record struct ForegroundTarget(nint Window, uint ProcessId, uint
     public bool IsOwnProcess => ProcessId == (uint)Environment.ProcessId;
 }
 
+/// <summary>Facts about another process that Velotext may need without touching its memory.</summary>
+public static class ProcessInfo
+{
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+    private const uint TokenQuery = 0x0008;
+    private const int TokenElevation = 20;
+
+    /// <summary>
+    /// True when the process runs as administrator, or when Velotext may not even query it (protected or
+    /// higher-integrity processes). Low-level hooks do not see input sent to such processes.
+    /// </summary>
+    /// <param name="processId">The process id.</param>
+    public static unsafe bool IsElevatedOrHidden(uint processId)
+    {
+        if (processId == 0)
+        {
+            return true;
+        }
+
+        var process = NativeMethods.OpenProcess(ProcessQueryLimitedInformation, false, processId);
+        if (process == 0)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (!NativeMethods.OpenProcessToken(process, TokenQuery, out var token))
+            {
+                return true;
+            }
+
+            try
+            {
+                int elevated;
+                return !NativeMethods.GetTokenInformation(token, TokenElevation, &elevated, sizeof(int), out _) || elevated != 0;
+            }
+            finally
+            {
+                NativeMethods.CloseHandle(token);
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(process);
+        }
+    }
+}
+
 /// <summary>Process tree queries.</summary>
 public static class ProcessTree
 {

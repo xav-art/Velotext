@@ -14,6 +14,7 @@ public sealed partial class SettingsService
     private readonly ILogger<SettingsService> _logger;
     private readonly Lock _gate = new();
     private AppSettings _current = new();
+    private bool _unavailable;
 
     /// <summary>Creates the service.</summary>
     /// <param name="paths">File locations.</param>
@@ -56,6 +57,7 @@ public sealed partial class SettingsService
         lock (_gate)
         {
             _current = (result.Value ?? new AppSettings()).Normalize();
+            _unavailable = result.Status == LoadStatus.Unavailable;
         }
     }
 
@@ -65,8 +67,17 @@ public sealed partial class SettingsService
     {
         ArgumentNullException.ThrowIfNull(change);
         AppSettings next;
+        bool save;
         lock (_gate)
         {
+            // The file was locked at startup: read it now, so the user's real settings are the base of
+            // the change instead of the defaults.
+            if (_unavailable && _store.Load() is { Status: not LoadStatus.Unavailable } retry)
+            {
+                _unavailable = false;
+                _current = (retry.Value ?? new AppSettings()).Normalize();
+            }
+
             next = change(_current).Normalize();
             if (next == _current)
             {
@@ -74,15 +85,24 @@ public sealed partial class SettingsService
             }
 
             _current = next;
+            save = !_unavailable;
         }
 
-        try
+        if (save)
         {
-            _store.Save(next);
+            try
+            {
+                _store.Save(next);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogSaveFailed(_logger, ex);
+            }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        else
         {
-            LogSaveFailed(_logger, ex);
+            // Never write defaults over settings that another program keeps locked.
+            LogSaveSkipped(_logger);
         }
 
         Changed?.Invoke(this, next);
@@ -90,6 +110,9 @@ public sealed partial class SettingsService
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Settings file could not be read normally ({Status}); defaults or a backup are in use.")]
     private static partial void LogSettingsRecovered(ILogger logger, LoadStatus status);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The settings file is still locked by another program; the change applies until Velotext closes but is not saved.")]
+    private static partial void LogSaveSkipped(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Settings could not be saved.")]
     private static partial void LogSaveFailed(ILogger logger, Exception exception);

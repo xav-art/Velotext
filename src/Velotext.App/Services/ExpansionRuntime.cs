@@ -197,6 +197,18 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
             case ExpansionNoticeKind.WindowChanged:
                 _notifications.Show("Phrase not inserted", $"You clicked or switched windows while Velotext inserted \"{phrase}\", so it stopped. Check the text, then type the trigger again.", NotificationKind.Warning);
                 break;
+            case ExpansionNoticeKind.Expired:
+                _notifications.Show("Phrase not inserted", $"The clipboard did not respond in time, so Velotext stopped inserting \"{phrase}\". Check the text, then type the trigger again.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.DelimiterSkipped:
+                _notifications.Show("Phrase inserted, last key skipped", $"Velotext inserted \"{phrase}\", but you switched windows before it could type the key that followed the trigger. Check the text.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.TargetBusy when notice.TriggerRestored:
+                _notifications.Show("App still busy", $"The app has not taken the previous phrase yet, so Velotext did not insert \"{phrase}\" and typed your trigger back. Try again in a moment.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.TargetBusy:
+                _notifications.Show("App still busy", $"The app has not taken the previous phrase yet, so Velotext did not insert \"{phrase}\". Try again in a moment.", NotificationKind.Warning);
+                break;
             case ExpansionNoticeKind.KeysDiscarded:
                 _notifications.Show(
                     "Some keys not typed",

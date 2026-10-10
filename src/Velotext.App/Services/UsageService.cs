@@ -14,6 +14,7 @@ public sealed partial class UsageService : IDisposable
     private readonly TimeProvider _time;
     private readonly ILogger<UsageService> _logger;
     private readonly Debouncer _saver;
+    private bool _saveBlocked;
 
     /// <summary>Creates the service.</summary>
     /// <param name="paths">File locations.</param>
@@ -38,7 +39,16 @@ public sealed partial class UsageService : IDisposable
     /// <summary>Loads usage.json; a missing or damaged file starts empty.</summary>
     public void Load()
     {
-        Tracker = new UsageTracker(_store.Load().Value);
+        var result = _store.Load();
+
+        // A file that another program keeps locked holds real history: never write over it in this session.
+        _saveBlocked = result.Status == LoadStatus.Unavailable;
+        if (_saveBlocked)
+        {
+            LogUsageUnavailable(_logger);
+        }
+
+        Tracker = new UsageTracker(result.Value);
         Tracker.Changed += (_, _) =>
         {
             _saver.Request();
@@ -55,6 +65,11 @@ public sealed partial class UsageService : IDisposable
 
     private void Save()
     {
+        if (_saveBlocked)
+        {
+            return;
+        }
+
         try
         {
             _store.Save(Tracker.Snapshot());
@@ -64,6 +79,9 @@ public sealed partial class UsageService : IDisposable
             LogSaveFailed(_logger, ex);
         }
     }
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The usage file is locked by another program; usage from this session is not saved.")]
+    private static partial void LogUsageUnavailable(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Usage data could not be saved.")]
     private static partial void LogSaveFailed(ILogger logger, Exception exception);

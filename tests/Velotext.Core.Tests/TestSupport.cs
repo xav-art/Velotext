@@ -55,6 +55,7 @@ internal sealed class FakeTranslator : IKeyTranslator
     public const int Shift = 0x10;
     public const int Dead = 0xDE;
     public const int TwoCharacters = 0xDF;
+    public const int AfterDeadKey = 0xE0;
 
     public KeyMeaning Translate(in KeyStroke key) => key.VirtualKey switch
     {
@@ -63,6 +64,7 @@ internal sealed class FakeTranslator : IKeyTranslator
         Shift => KeyMeaning.Modifier,
         Dead => KeyMeaning.DeadKey,
         TwoCharacters => KeyMeaning.ForText(".s"),
+        AfterDeadKey => KeyMeaning.ForText("X") with { AfterDeadKey = true },
         0xAD => KeyMeaning.Ignore,
         _ => KeyMeaning.ForText(((char)key.ScanCode).ToString()),
     };
@@ -86,6 +88,10 @@ internal sealed class RecordingSink : IInputSequencerSink
     public void ReplayRequested(IReadOnlyList<KeyStroke> keys) => Replays.Add(keys);
 
     public void HeldKeysDiscarded(long operationId, int count) => Discards.Add((operationId, count));
+
+    public List<long> Expired { get; } = [];
+
+    public void OperationExpired(long operationId) => Expired.Add(operationId);
 }
 
 /// <summary>Key event helpers. Text keys carry their character in the scan code field for <see cref="FakeTranslator"/>.</summary>

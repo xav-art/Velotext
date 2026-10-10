@@ -84,7 +84,8 @@ public enum KeyMeaningKind
 /// <summary>The meaning of a key press for trigger matching.</summary>
 /// <param name="Kind">The kind of effect.</param>
 /// <param name="Text">The produced text for <see cref="KeyMeaningKind.Text"/>; one or two UTF-16 units.</param>
-public readonly record struct KeyMeaning(KeyMeaningKind Kind, string? Text = null)
+/// <param name="AfterDeadKey">True when the key completed a dead key (^ then e); the application still holds the dead key until it sees this key.</param>
+public readonly record struct KeyMeaning(KeyMeaningKind Kind, string? Text = null, bool AfterDeadKey = false)
 {
     /// <summary>No effect.</summary>
     public static KeyMeaning Ignore { get; } = new(KeyMeaningKind.Ignore);

@@ -488,4 +488,45 @@ public sealed class MainViewModelTests : IDisposable
         Assert.False(string.IsNullOrEmpty(new LibraryUnavailableException().Message));
         Assert.Same(inner, new LibraryUnavailableException("m", inner).InnerException);
     }
+
+    [Fact]
+    public void Locked_settings_are_never_overwritten_with_defaults()
+    {
+        _env.Settings.Update(s => s with { RichTextFontName = "Calibri" });
+        var saved = File.ReadAllText(_env.Paths.SettingsFile);
+        var settings = new SettingsService(_env.Paths, Microsoft.Extensions.Logging.Abstractions.NullLogger<SettingsService>.Instance);
+
+        using (new FileStream(_env.Paths.SettingsFile, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            settings.Load();
+            settings.Update(s => s with { TrayHintShown = true });
+        }
+
+        // The change stays in memory while the file is locked; the user's file is untouched.
+        Assert.True(settings.Current.TrayHintShown);
+        Assert.Equal(saved, File.ReadAllText(_env.Paths.SettingsFile));
+
+        // Once the file can be read, the next change builds on the user's real settings.
+        settings.Update(s => s with { UndoWithBackspace = false });
+        Assert.Equal("Calibri", settings.Current.RichTextFontName);
+        Assert.Contains("Calibri", File.ReadAllText(_env.Paths.SettingsFile), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Locked_usage_history_is_never_overwritten()
+    {
+        File.WriteAllText(_env.Paths.UsageFile, "{\"entries\":[]}");
+        var before = File.ReadAllText(_env.Paths.UsageFile);
+        using var usage = new UsageService(_env.Paths, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<UsageService>.Instance);
+
+        using (new FileStream(_env.Paths.UsageFile, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            usage.Load();
+        }
+
+        usage.RecordUse(Guid.NewGuid());
+        usage.Dispose();
+
+        Assert.Equal(before, File.ReadAllText(_env.Paths.UsageFile));
+    }
 }

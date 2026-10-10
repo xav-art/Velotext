@@ -45,20 +45,49 @@ public interface IInputInjector
 
     /// <summary>Re-sends a key press and release as Velotext's own input, with the modifiers the user held.</summary>
     /// <param name="key">The original key.</param>
+    /// <param name="physical">The modifier keys the user physically holds now; the input ends in this state.</param>
     /// <returns>True when every event was accepted.</returns>
-    bool Resend(in KeyStroke key);
+    bool Resend(in KeyStroke key, ModifierSides physical);
 
     /// <summary>Re-sends held-back user keys in order, marked as replays.</summary>
     /// <param name="keys">The keys to replay.</param>
+    /// <param name="physical">The modifier keys the user physically holds now; the input ends in this state.</param>
     /// <returns>How many keys the system refused.</returns>
-    int Replay(IReadOnlyList<KeyStroke> keys);
+    int Replay(IReadOnlyList<KeyStroke> keys, ModifierSides physical);
+}
+
+/// <summary>Shift, Ctrl and Alt on each side of the keyboard. Bit n is virtual key 0xA0 + n.</summary>
+[Flags]
+public enum ModifierSides
+{
+    /// <summary>No modifier.</summary>
+    None = 0,
+
+    /// <summary>Left Shift (VK 0xA0).</summary>
+    LeftShift = 1,
+
+    /// <summary>Right Shift (VK 0xA1).</summary>
+    RightShift = 2,
+
+    /// <summary>Left Ctrl (VK 0xA2).</summary>
+    LeftControl = 4,
+
+    /// <summary>Right Ctrl (VK 0xA3).</summary>
+    RightControl = 8,
+
+    /// <summary>Left Alt (VK 0xA4).</summary>
+    LeftAlt = 16,
+
+    /// <summary>Right Alt, or AltGr (VK 0xA5).</summary>
+    RightAlt = 32,
 }
 
 /// <summary>
 /// Sends keyboard input with <c>SendInput</c>. Each call is one atomic batch, so user typing never
 /// interleaves. Re-sent and replayed keys get back the Shift, Ctrl and Alt state the user typed them
-/// with: the batch presses or releases those modifiers around the key (as Velotext's own input) when
-/// the current state differs, so "?" stays "?" and Shift+Enter stays Shift+Enter.
+/// with: the batch presses or releases those modifiers before the key (as Velotext's own input) when the
+/// state differs, so "?" stays "?" and Shift+Enter stays Shift+Enter. Every batch ends with the modifiers
+/// in the state the user physically holds, side by side, so none is left pressed.
 /// </summary>
 public sealed class InputInjector : IInputInjector
 {
@@ -82,6 +111,9 @@ public sealed class InputInjector : IInputInjector
 
     /// <summary>Virtual key: packet (a Unicode character sent by software).</summary>
     public const int VkPacket = 0xE7;
+
+    /// <summary>Virtual key: left Shift; right Shift, left and right Ctrl, left and right Alt follow (0xA1 to 0xA5).</summary>
+    public const int VkLeftShift = 0xA0;
 
     /// <summary>Virtual key: V.</summary>
     public const ushort VkV = 0x56;
@@ -164,20 +196,22 @@ public sealed class InputInjector : IInputInjector
 
     /// <summary>Re-sends a key press and release exactly as originally typed, as Velotext's own input.</summary>
     /// <param name="key">The original key.</param>
-    /// <returns>True when both events were accepted.</returns>
-    public bool Resend(in KeyStroke key)
+    /// <param name="physical">The Shift, Ctrl and Alt keys the user physically holds now; the batch ends in this state.</param>
+    /// <returns>True when every event was accepted.</returns>
+    public bool Resend(in KeyStroke key, ModifierSides physical)
     {
-        var inputs = BuildResend(key, CurrentModifiers());
+        var inputs = BuildResend(key, CurrentModifiers(), physical);
         return Send(inputs) == inputs.Count;
     }
 
     /// <summary>Re-sends held-back user keys in order, marked as replays.</summary>
     /// <param name="keys">The keys to replay.</param>
+    /// <param name="physical">The Shift, Ctrl and Alt keys the user physically holds now; the batch ends in this state.</param>
     /// <returns>How many keys the system refused.</returns>
-    public int Replay(IReadOnlyList<KeyStroke> keys)
+    public int Replay(IReadOnlyList<KeyStroke> keys, ModifierSides physical)
     {
         ArgumentNullException.ThrowIfNull(keys);
-        var (inputs, keyEnds) = BuildReplay(keys, CurrentModifiers());
+        var (inputs, keyEnds) = BuildReplay(keys, CurrentModifiers(), physical);
 
         // SendInput stops at the first refused event; count the replayed keys that did not go out.
         var sent = (int)Send(inputs);
@@ -186,20 +220,28 @@ public sealed class InputInjector : IInputInjector
 
     /// <summary>The events that re-send a key press and release with the modifiers the user held.</summary>
     /// <param name="key">The original key.</param>
-    /// <param name="current">The Shift, Ctrl and Alt state right now.</param>
-    internal static List<InputRecord> BuildResend(in KeyStroke key, KeyStrokeAttributes current)
+    /// <param name="current">The modifier state Windows has right now.</param>
+    /// <param name="physical">The modifiers the user physically holds; the events end in this state.</param>
+    internal static List<InputRecord> BuildResend(in KeyStroke key, ModifierSides current, ModifierSides physical)
     {
-        var inputs = new List<InputRecord>(8);
+        var inputs = new List<InputRecord>(10);
         var state = current;
-        AddWithModifiers(inputs, key with { Flags = key.Flags & ~KeyStrokeAttributes.KeyUp }, InputMarkers.Own, ref state);
+        if (key.VirtualKey != VkPacket)
+        {
+            SetModifiers(inputs, ref state, key.Modifiers);
+        }
+
+        AddEvent(inputs, key with { Flags = key.Flags & ~KeyStrokeAttributes.KeyUp }, InputMarkers.Own);
         AddEvent(inputs, key with { Flags = key.Flags | KeyStrokeAttributes.KeyUp }, InputMarkers.Own);
+        RestoreTo(inputs, ref state, physical);
         return inputs;
     }
 
     /// <summary>The events that replay held keys, and where each key's events end in the list.</summary>
     /// <param name="keys">The held keys, in order.</param>
-    /// <param name="current">The Shift, Ctrl and Alt state right now.</param>
-    internal static (List<InputRecord> Inputs, List<int> KeyEnds) BuildReplay(IReadOnlyList<KeyStroke> keys, KeyStrokeAttributes current)
+    /// <param name="current">The modifier state Windows has right now.</param>
+    /// <param name="physical">The modifiers the user physically holds; the events end in this state.</param>
+    internal static (List<InputRecord> Inputs, List<int> KeyEnds) BuildReplay(IReadOnlyList<KeyStroke> keys, ModifierSides current, ModifierSides physical)
     {
         var inputs = new List<InputRecord>(keys.Count + 8);
         var keyEnds = new List<int>(keys.Count);
@@ -209,74 +251,105 @@ public sealed class InputInjector : IInputInjector
             if (key.IsModifierKey)
             {
                 state = Track(state, key);
-                AddEvent(inputs, key, InputMarkers.Replay);
             }
-            else if (key.IsKeyUp)
+            else if (!key.IsKeyUp && key.VirtualKey != VkPacket)
             {
-                AddEvent(inputs, key, InputMarkers.Replay);
-            }
-            else
-            {
-                AddWithModifiers(inputs, key, InputMarkers.Replay, ref state);
+                SetModifiers(inputs, ref state, key.Modifiers);
             }
 
+            AddEvent(inputs, key, InputMarkers.Replay);
             keyEnds.Add(inputs.Count);
         }
 
+        // Modifiers stay as the last key needed them until here; now they match the keyboard again, so a
+        // modifier is never left pressed and a key the user still holds keeps working.
+        RestoreTo(inputs, ref state, physical);
         return (inputs, keyEnds);
     }
 
-    private static KeyStrokeAttributes CurrentModifiers() =>
-        (IsDown(VkShift) ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
-        | (IsDown(VkControl) ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
-        | (IsDown(VkMenu) ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
-
-    private static bool IsDown(int vk) => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0;
-
-    private static KeyStrokeAttributes Track(KeyStrokeAttributes state, in KeyStroke key)
+    /// <summary>The modifier state Windows has right now, per side.</summary>
+    internal static ModifierSides CurrentModifiers()
     {
-        var flag = key.VirtualKey switch
+        var sides = ModifierSides.None;
+        for (var i = 0; i < 6; i++)
         {
-            0x10 or 0xA0 or 0xA1 => KeyStrokeAttributes.Shift,
-            0x11 or 0xA2 or 0xA3 => KeyStrokeAttributes.Control,
-            0x12 or 0xA4 or 0xA5 => KeyStrokeAttributes.Alt,
-            _ => KeyStrokeAttributes.None,
+            if ((NativeMethods.GetAsyncKeyState(VkLeftShift + i) & 0x8000) != 0)
+            {
+                sides |= (ModifierSides)(1 << i);
+            }
+        }
+
+        return sides;
+    }
+
+    private static ModifierSides Track(ModifierSides state, in KeyStroke key)
+    {
+        var side = key.VirtualKey switch
+        {
+            >= VkLeftShift and <= VkLeftShift + 5 => (ModifierSides)(1 << (key.VirtualKey - VkLeftShift)),
+            0x10 => ModifierSides.LeftShift,
+            0x11 => (key.Flags & KeyStrokeAttributes.Extended) != 0 ? ModifierSides.RightControl : ModifierSides.LeftControl,
+            0x12 => (key.Flags & KeyStrokeAttributes.Extended) != 0 ? ModifierSides.RightAlt : ModifierSides.LeftAlt,
+            _ => ModifierSides.None,
         };
-        return key.IsKeyUp ? state & ~flag : state | flag;
+        return key.IsKeyUp ? state & ~side : state | side;
     }
 
-    /// <summary>Adds a key press, pressing or releasing Shift, Ctrl and Alt around it so they match how the user typed it.</summary>
-    private static void AddWithModifiers(List<InputRecord> inputs, in KeyStroke key, nuint marker, ref KeyStrokeAttributes state)
+    /// <summary>Presses or releases Shift, Ctrl and Alt so that exactly the wanted ones are down (either side counts).</summary>
+    private static void SetModifiers(List<InputRecord> inputs, ref ModifierSides state, KeyStrokeAttributes wanted)
     {
-        var wanted = key.Modifiers;
-        var change = wanted ^ state;
-        if (key.VirtualKey == VkPacket || change == KeyStrokeAttributes.None)
+        (KeyStrokeAttributes Flag, ModifierSides Both, ModifierSides Left)[] groups =
+        [
+            (KeyStrokeAttributes.Shift, ModifierSides.LeftShift | ModifierSides.RightShift, ModifierSides.LeftShift),
+            (KeyStrokeAttributes.Control, ModifierSides.LeftControl | ModifierSides.RightControl, ModifierSides.LeftControl),
+            (KeyStrokeAttributes.Alt, ModifierSides.LeftAlt | ModifierSides.RightAlt, ModifierSides.LeftAlt),
+        ];
+        foreach (var (flag, both, left) in groups)
         {
-            AddEvent(inputs, key, marker);
-            return;
-        }
-
-        (KeyStrokeAttributes Flag, ushort Vk)[] modifiers = [(KeyStrokeAttributes.Shift, VkShift), (KeyStrokeAttributes.Control, VkControl), (KeyStrokeAttributes.Alt, VkMenu)];
-        foreach (var (flag, vk) in modifiers)
-        {
-            if ((change & flag) != 0)
+            var wantDown = (wanted & flag) != 0;
+            var isDown = (state & both) != 0;
+            if (wantDown && !isDown)
             {
-                inputs.Add(Key(vk, up: (wanted & flag) == 0));
+                inputs.Add(SideKey(left, up: false));
+                state |= left;
             }
-        }
-
-        AddEvent(inputs, key, marker);
-
-        // Put the modifiers back as they are now, so keys the user still holds keep working.
-        foreach (var (flag, vk) in modifiers)
-        {
-            if ((change & flag) != 0)
+            else if (!wantDown && isDown)
             {
-                inputs.Add(Key(vk, up: (state & flag) == 0));
+                // Release each side that is down, or the other side would keep the modifier active.
+                foreach (var side in new[] { left, (ModifierSides)((int)left << 1) })
+                {
+                    if ((state & side) != 0)
+                    {
+                        inputs.Add(SideKey(side, up: true));
+                    }
+                }
+
+                state &= ~both;
             }
         }
     }
 
+    /// <summary>Presses or releases single sides until the state equals <paramref name="target"/>.</summary>
+    private static void RestoreTo(List<InputRecord> inputs, ref ModifierSides state, ModifierSides target)
+    {
+        for (var i = 0; i < 6; i++)
+        {
+            var side = (ModifierSides)(1 << i);
+            if ((state & side) != (target & side))
+            {
+                inputs.Add(SideKey(side, up: (target & side) == 0));
+            }
+        }
+
+        state = target;
+    }
+
+    /// <summary>A press or release of one side's modifier key; right Ctrl and right Alt are extended keys.</summary>
+    private static InputRecord SideKey(ModifierSides side, bool up)
+    {
+        var vk = (ushort)(VkLeftShift + System.Numerics.BitOperations.Log2((uint)side));
+        return Key(vk, up, extended: side is ModifierSides.RightControl or ModifierSides.RightAlt);
+    }
     private static void AddEvent(List<InputRecord> inputs, in KeyStroke key, nuint marker) =>
         inputs.Add(key.VirtualKey == VkPacket
             ? Unicode((char)key.ScanCode, key.IsKeyUp, marker)

@@ -41,13 +41,13 @@ internal sealed class FakeInjector : IInputInjector
         return Accept;
     }
 
-    public bool Resend(in KeyStroke key)
+    public bool Resend(in KeyStroke key, ModifierSides physical)
     {
         Calls.Enqueue($"resend {(char)key.ScanCode}");
         return Accept;
     }
 
-    public int Replay(IReadOnlyList<KeyStroke> keys)
+    public int Replay(IReadOnlyList<KeyStroke> keys, ModifierSides physical)
     {
         Calls.Enqueue($"replay {keys.Count}");
         return RefuseReplay;
@@ -138,6 +138,8 @@ internal sealed class FakeSequencerHost(InputSequencer sequencer) : ISequencerHo
 
     public long ContextGeneration => Interlocked.Read(ref _contextGeneration);
 
+    public ModifierSides HeldModifiers => ModifierSides.None;
+
     /// <summary>Simulates a click: the sequencer loses its context and running operations see the change.</summary>
     public void Click()
     {
@@ -204,4 +206,6 @@ internal sealed class ForwardingSink : IInputSequencerSink
     public void ReplayRequested(IReadOnlyList<KeyStroke> keys) => Target!.ReplayRequested(keys);
 
     public void HeldKeysDiscarded(long operationId, int count) => Target!.HeldKeysDiscarded(operationId, count);
+
+    public void OperationExpired(long operationId) => Target!.OperationExpired(operationId);
 }
