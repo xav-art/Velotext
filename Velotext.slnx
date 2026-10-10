@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Velotext.App/Velotext.App.csproj" />
+    <Project Path="src/Velotext.Core/Velotext.Core.csproj" />
+    <Project Path="src/Velotext.Platform.Windows/Velotext.Platform.Windows.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Velotext.App.Tests/Velotext.App.Tests.csproj" />
+    <Project Path="tests/Velotext.Conventions.Tests/Velotext.Conventions.Tests.csproj" />
+    <Project Path="tests/Velotext.Core.Tests/Velotext.Core.Tests.csproj" />
+    <Project Path="tests/Velotext.Platform.Windows.Tests/Velotext.Platform.Windows.Tests.csproj" />
+  </Folder>
+</Solution>

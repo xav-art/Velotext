@@ -1,0 +1,28 @@
+# Velotext: files that must never be published.
+
+# Local agent workflow and internal docs (kept on the developer machine only)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+docs/
+.claude/
+.sf/
+
+# Repo-local .NET SDK (installed by build.ps1)
+.dotnet/
+
+# Build, test and packaging output
+bin/
+obj/
+artifacts/
+TestResults/
+coverage/
+Releases/
+*.binlog
+
+# Editor and OS clutter
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db

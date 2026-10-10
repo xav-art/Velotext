@@ -1,0 +1,35 @@
+# Velotext: builds the per-user installer for a version tag (v1.2.3) and attaches it to a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+
+      - name: Build, test and pack
+        shell: pwsh
+        run: ./build.ps1 -Configuration Release -Publish -Version ($env:GITHUB_REF_NAME.TrimStart('v'))
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $files = Get-ChildItem artifacts/releases -File | ForEach-Object { $_.FullName }
+          gh release create $env:GITHUB_REF_NAME $files --title "Velotext $($env:GITHUB_REF_NAME)" --notes "Per-user installer: download and run Velotext-win-Setup.exe. No admin rights needed."

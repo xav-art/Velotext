@@ -1,0 +1,11 @@
+{
+  "sdk": {
+    "version": "10.0.401",
+    "rollForward": "latestFeature",
+    "paths": [ ".dotnet", "$host$" ],
+    "errorMessage": "The .NET 10 SDK was not found. Run build.ps1 -InstallSdk to install it into .dotnet (no admin needed)."
+  },
+  "test": {
+    "runner": "Microsoft.Testing.Platform"
+  }
+}

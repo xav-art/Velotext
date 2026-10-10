@@ -1,0 +1,41 @@
+<!-- Velotext: the desktop application (WPF UI, tray icon, settings, composition root). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>Velotext.App</RootNamespace>
+    <AssemblyName>Velotext</AssemblyName>
+    <ApplicationIcon>Assets\velotext.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>Velotext.App.Program</StartupObject>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Velotext: a per-user text expander for Windows. Type a short trigger and Velotext inserts the formatted phrase.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="H.NotifyIcon.Wpf" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Velopack" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Velotext.Core\Velotext.Core.csproj" />
+    <ProjectReference Include="..\Velotext.Platform.Windows\Velotext.Platform.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\*.ico" />
+    <Resource Include="Assets\*.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Program.Main is the entry point, so App.xaml is a plain page (no generated Main). -->
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Velotext.App.Tests" />
+  </ItemGroup>
+</Project>

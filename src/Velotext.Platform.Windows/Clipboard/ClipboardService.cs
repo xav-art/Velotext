@@ -1,0 +1,471 @@
+// Velotext: clipboard access for pasting phrases and restoring the user's clipboard afterwards.
+// Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
+
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Extensions.Logging;
+using Velotext.Platform.Windows.Interop;
+using Velotext.Platform.Windows.Native;
+using Velotext.Platform.Windows.Threading;
+
+namespace Velotext.Platform.Windows.Clipboard;
+
+/// <summary>The formats of one phrase on the clipboard.</summary>
+/// <param name="Text">Plain text (always present).</param>
+/// <param name="Html">Windows "HTML Format" payload, or <c>null</c> for plain phrases.</param>
+/// <param name="Rtf">RTF, or <c>null</c> for plain phrases.</param>
+public sealed record ClipboardPayload(string Text, string? Html, string? Rtf);
+
+/// <summary>How a paste ended.</summary>
+public enum PasteOutcome
+{
+    /// <summary>The target application read the phrase.</summary>
+    Consumed = 0,
+
+    /// <summary>No read by the target was seen before the timeout.</summary>
+    TimedOut = 1,
+
+    /// <summary>Someone else put new content on the clipboard meanwhile; it is left alone.</summary>
+    ReplacedByOther = 2,
+}
+
+/// <summary>
+/// Clipboard access on a dedicated thread. To paste, Velotext saves the current clipboard, offers the
+/// phrase with delayed rendering (so it can see exactly when the target application reads it), and
+/// restores the saved clipboard once the target has read it. The temporary content carries the
+/// Windows flags that keep it out of clipboard history, cloud clipboard and clipboard managers.
+/// </summary>
+public sealed partial class ClipboardService : Expansion.IClipboardService, IDisposable
+{
+    private const int OpenAttempts = 25;
+    private const int MaxFormatBytes = 32 * 1024 * 1024;
+    private const int MaxSnapshotBytes = 64 * 1024 * 1024;
+
+    // GDI handle formats cannot be copied as memory; Windows re-creates bitmaps from CF_DIB anyway.
+    private static readonly HashSet<uint> s_handleFormats = [2, 3, 9, 14, 0x80, 0x82, 0x83, 0x8E];
+
+    // OLE formats reference objects inside the original application and are useless as raw bytes.
+    private static readonly HashSet<string> s_oleFormats = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "DataObject", "Ole Private Data", "OwnerLink", "ObjectLink", "Link Source", "Embed Source",
+        "Embedded Object", "Link Source Descriptor", "Object Descriptor",
+    };
+
+    private readonly ILogger<ClipboardService> _logger;
+    private readonly MessageLoopThread _thread;
+    private readonly uint _htmlFormat;
+    private readonly uint _rtfFormat;
+    private readonly uint _excludeFormat;
+    private readonly uint _historyFormat;
+    private readonly uint _cloudFormat;
+    private PasteSession? _session;
+    private bool _emptyingOurselves;
+
+    /// <summary>Starts the clipboard thread.</summary>
+    /// <param name="logger">Diagnostics logger. Never receives clipboard content.</param>
+    public ClipboardService(ILogger<ClipboardService> logger)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _htmlFormat = NativeMethods.RegisterClipboardFormatW("HTML Format");
+        _rtfFormat = NativeMethods.RegisterClipboardFormatW("Rich Text Format");
+        _excludeFormat = NativeMethods.RegisterClipboardFormatW("ExcludeClipboardContentFromMonitorProcessing");
+        _historyFormat = NativeMethods.RegisterClipboardFormatW("CanIncludeInClipboardHistory");
+        _cloudFormat = NativeMethods.RegisterClipboardFormatW("CanUploadToCloudClipboard");
+        _thread = new MessageLoopThread("Clipboard", ThreadPriority.AboveNormal, OnWindowMessage, ex => LogError(_logger, ex));
+    }
+
+    /// <summary>Saves the clipboard and offers <paramref name="payload"/> for pasting into <paramref name="targetProcessId"/>.</summary>
+    /// <param name="payload">The phrase formats.</param>
+    /// <param name="targetProcessId">Process that should read it (the foreground application).</param>
+    /// <returns>The paste session, or <c>null</c> when the clipboard could not be opened.</returns>
+    public Task<PasteSession?> BeginPasteAsync(ClipboardPayload payload, uint targetProcessId)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return _thread.InvokeAsync(() =>
+        {
+            var snapshot = Capture();
+            if (snapshot is null || !TryOpen())
+            {
+                return null;
+            }
+
+            var session = new PasteSession(payload, targetProcessId, snapshot);
+            try
+            {
+                EmptyAsOwner();
+                _session = session;
+
+                // Content formats are rendered on request, which tells us when the target reads them.
+                if (payload.Html is not null)
+                {
+                    NativeMethods.SetClipboardData(_htmlFormat, 0);
+                }
+
+                if (payload.Rtf is not null)
+                {
+                    NativeMethods.SetClipboardData(_rtfFormat, 0);
+                }
+
+                NativeMethods.SetClipboardData(NativeMethods.CfUnicodeText, 0);
+                SetPrivacyFlags();
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
+
+            return session;
+        });
+    }
+
+    /// <summary>Puts the user's saved clipboard back, unless someone replaced the content meanwhile.</summary>
+    /// <param name="session">The finished paste session.</param>
+    public Task RestoreAsync(PasteSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return _thread.InvokeAsync(() =>
+        {
+            if (!ReferenceEquals(_session, session))
+            {
+                return;
+            }
+
+            _session = null;
+            if (session.ReplacedByOther || !TryOpen())
+            {
+                return;
+            }
+
+            try
+            {
+                EmptyAsOwner();
+                foreach (var (format, data) in session.Snapshot.Formats)
+                {
+                    SetData(format, data);
+                }
+
+                // The restored content is already in clipboard history; do not add it twice. An empty
+                // clipboard stays truly empty.
+                if (session.Snapshot.Formats.Count > 0)
+                {
+                    SetData(_excludeFormat, BitConverter.GetBytes(0));
+                }
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
+        });
+    }
+
+    /// <summary>Copies a phrase to the clipboard for the user to paste later (the Clipboard output target).</summary>
+    /// <param name="payload">The phrase formats.</param>
+    /// <returns>True when the clipboard was updated.</returns>
+    public Task<bool> CopyAsync(ClipboardPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return _thread.InvokeAsync(() =>
+        {
+            if (!TryOpen())
+            {
+                return false;
+            }
+
+            try
+            {
+                _session = null;
+                EmptyAsOwner();
+                if (payload.Html is not null)
+                {
+                    SetData(_htmlFormat, Utf8WithNull(payload.Html));
+                }
+
+                if (payload.Rtf is not null)
+                {
+                    SetData(_rtfFormat, AsciiWithNull(payload.Rtf));
+                }
+
+                SetData(NativeMethods.CfUnicodeText, Utf16WithNull(payload.Text));
+                return true;
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
+        });
+    }
+
+
+    /// <summary>Stops the clipboard thread. Pending delayed formats are rendered first by Windows' request.</summary>
+    public void Dispose() => _thread.Dispose();
+
+    private nint? OnWindowMessage(uint message, nint wParam, nint lParam)
+    {
+        switch (message)
+        {
+            case NativeMethods.WmRenderFormat:
+                RenderFormat((uint)wParam);
+                return 0;
+            case NativeMethods.WmRenderAllFormats:
+                RenderAll();
+                return 0;
+            case NativeMethods.WmDestroyClipboard:
+                if (!_emptyingOurselves && _session is { } session)
+                {
+                    session.MarkReplaced();
+                }
+
+                return 0;
+            default:
+                return null;
+        }
+    }
+
+    private void RenderFormat(uint format)
+    {
+        if (_session is not { } session)
+        {
+            return;
+        }
+
+        // The requester has the clipboard open; find out whether it is the paste target.
+        var requester = NativeMethods.GetOpenClipboardWindow();
+        if (requester != 0)
+        {
+            NativeMethods.GetWindowThreadProcessId(requester, out var requesterProcess);
+            if (ProcessTree.IsSameOrDescendant(requesterProcess, session.TargetProcessId))
+            {
+                session.MarkConsumed(requester);
+            }
+        }
+
+        var data = Render(session.Payload, format);
+        if (data is not null)
+        {
+            SetData(format, data);
+        }
+    }
+
+    private void RenderAll()
+    {
+        if (_session is not { } session || !TryOpen())
+        {
+            return;
+        }
+
+        try
+        {
+            if (NativeMethods.GetClipboardOwner() != _thread.WindowHandle)
+            {
+                return;
+            }
+
+            foreach (var format in new[] { _htmlFormat, _rtfFormat, NativeMethods.CfUnicodeText })
+            {
+                if (Render(session.Payload, format) is { } data)
+                {
+                    SetData(format, data);
+                }
+            }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    private byte[]? Render(ClipboardPayload payload, uint format)
+    {
+        if (format == _htmlFormat && payload.Html is not null)
+        {
+            return Utf8WithNull(payload.Html);
+        }
+
+        if (format == _rtfFormat && payload.Rtf is not null)
+        {
+            return AsciiWithNull(payload.Rtf);
+        }
+
+        return format == NativeMethods.CfUnicodeText ? Utf16WithNull(payload.Text) : null;
+    }
+
+    private void SetPrivacyFlags()
+    {
+        var zero = BitConverter.GetBytes(0);
+        SetData(_excludeFormat, zero);
+        SetData(_historyFormat, zero);
+        SetData(_cloudFormat, zero);
+    }
+
+    private void EmptyAsOwner()
+    {
+        _emptyingOurselves = true;
+        try
+        {
+            NativeMethods.EmptyClipboard();
+        }
+        finally
+        {
+            _emptyingOurselves = false;
+        }
+    }
+
+    private bool TryOpen()
+    {
+        // Another application may hold the clipboard for a moment; retry briefly.
+        for (var attempt = 0; attempt < OpenAttempts; attempt++)
+        {
+            if (NativeMethods.OpenClipboard(_thread.WindowHandle))
+            {
+                return true;
+            }
+
+            Thread.Sleep(10);
+        }
+
+        LogClipboardBusy(_logger);
+        return false;
+    }
+
+    private unsafe ClipboardSnapshot? Capture()
+    {
+        if (!TryOpen())
+        {
+            return null;
+        }
+
+        try
+        {
+            var formats = new List<(uint, byte[])>();
+            long total = 0;
+            uint format = 0;
+            while ((format = NativeMethods.EnumClipboardFormats(format)) != 0)
+            {
+                if (s_handleFormats.Contains(format) || (format >= 0xC000 && s_oleFormats.Contains(FormatName(format))))
+                {
+                    continue;
+                }
+
+                var handle = NativeMethods.GetClipboardData(format);
+                if (handle == 0)
+                {
+                    continue;
+                }
+
+                var size = (long)NativeMethods.GlobalSize(handle);
+                if (size <= 0 || size > MaxFormatBytes || total + size > MaxSnapshotBytes)
+                {
+                    continue;
+                }
+
+                var pointer = NativeMethods.GlobalLock(handle);
+                if (pointer == 0)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var bytes = new byte[size];
+                    Marshal.Copy(pointer, bytes, 0, (int)size);
+                    formats.Add((format, bytes));
+                    total += size;
+                }
+                finally
+                {
+                    NativeMethods.GlobalUnlock(handle);
+                }
+            }
+
+            return new ClipboardSnapshot(formats);
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    private static unsafe string FormatName(uint format)
+    {
+        var buffer = stackalloc char[256];
+        var length = NativeMethods.GetClipboardFormatNameW(format, buffer, 256);
+        return length > 0 ? new string(buffer, 0, length) : string.Empty;
+    }
+
+    private static void SetData(uint format, byte[] data)
+    {
+        var handle = NativeMethods.GlobalAlloc(NativeMethods.GmemMoveable, (nuint)Math.Max(1, data.Length));
+        if (handle == 0)
+        {
+            return;
+        }
+
+        var pointer = NativeMethods.GlobalLock(handle);
+        if (pointer == 0)
+        {
+            NativeMethods.GlobalFree(handle);
+            return;
+        }
+
+        Marshal.Copy(data, 0, pointer, data.Length);
+        NativeMethods.GlobalUnlock(handle);
+        if (NativeMethods.SetClipboardData(format, handle) == 0)
+        {
+            // Ownership passes to Windows only on success.
+            NativeMethods.GlobalFree(handle);
+        }
+    }
+
+    private static byte[] Utf8WithNull(string text) => [.. Encoding.UTF8.GetBytes(text), 0];
+
+    private static byte[] AsciiWithNull(string text) => [.. Encoding.ASCII.GetBytes(text), 0];
+
+    private static byte[] Utf16WithNull(string text) => [.. Encoding.Unicode.GetBytes(text), 0, 0];
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The clipboard is held by another application.")]
+    private static partial void LogClipboardBusy(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "Clipboard thread error.")]
+    private static partial void LogError(ILogger logger, Exception exception);
+}
+
+/// <summary>A saved copy of the clipboard's memory-based formats, in their original order.</summary>
+/// <param name="Formats">Format ids and their bytes.</param>
+public sealed record ClipboardSnapshot(IReadOnlyList<(uint Format, byte[] Data)> Formats);
+
+/// <summary>One paste in progress: what is offered, to whom, and what was saved.</summary>
+public sealed class PasteSession
+{
+    private readonly TaskCompletionSource<nint> _consumed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private volatile bool _replaced;
+
+    internal PasteSession(ClipboardPayload payload, uint targetProcessId, ClipboardSnapshot snapshot)
+    {
+        Payload = payload;
+        TargetProcessId = targetProcessId;
+        Snapshot = snapshot;
+    }
+
+    /// <summary>The offered phrase.</summary>
+    public ClipboardPayload Payload { get; }
+
+    /// <summary>The process expected to read it.</summary>
+    public uint TargetProcessId { get; }
+
+    /// <summary>The saved user clipboard.</summary>
+    public ClipboardSnapshot Snapshot { get; }
+
+    /// <summary>True when another application replaced the clipboard; it must not be restored then.</summary>
+    public bool ReplacedByOther => _replaced;
+
+    /// <summary>Completes with the reading window when the target reads the phrase.</summary>
+    public Task<nint> Consumed => _consumed.Task;
+
+    internal void MarkConsumed(nint window) => _consumed.TrySetResult(window);
+
+    internal void MarkReplaced()
+    {
+        _replaced = true;
+        _consumed.TrySetResult(0);
+    }
+}

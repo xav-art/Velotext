@@ -1,0 +1,11 @@
+<!-- Velotext: platform-independent core (library model, rich text, matching engine, storage). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Velotext.Core</RootNamespace>
+    <Description>Platform-independent core of Velotext: phrase library model, rich text renderers, trigger matching and storage.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Velotext.Core.Tests" />
+  </ItemGroup>
+</Project>

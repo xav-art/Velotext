@@ -1,0 +1,99 @@
+// Velotext: foreground window and process helpers (who has focus, which process family a window belongs to).
+// Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
+
+using Velotext.Platform.Windows.Native;
+
+namespace Velotext.Platform.Windows.Interop;
+
+/// <summary>The window that has keyboard focus and the process that owns it.</summary>
+/// <param name="Window">Window handle, or zero when no window has focus.</param>
+/// <param name="ProcessId">Owning process id, or zero.</param>
+/// <param name="ThreadId">Owning thread id, or zero.</param>
+public readonly record struct ForegroundTarget(nint Window, uint ProcessId, uint ThreadId)
+{
+    /// <summary>Reads the current foreground window.</summary>
+    public static ForegroundTarget Current()
+    {
+        var window = NativeMethods.GetForegroundWindow();
+        if (window == 0)
+        {
+            return default;
+        }
+
+        var threadId = NativeMethods.GetWindowThreadProcessId(window, out var processId);
+        return new ForegroundTarget(window, processId, threadId);
+    }
+
+    /// <summary>True when the foreground window belongs to this Velotext process.</summary>
+    public bool IsOwnProcess => ProcessId == (uint)Environment.ProcessId;
+}
+
+/// <summary>Process tree queries.</summary>
+public static class ProcessTree
+{
+    /// <summary>
+    /// Returns true when <paramref name="processId"/> is <paramref name="ancestorId"/> or one of its
+    /// descendants (up to <paramref name="maxDepth"/> levels). Browser-based apps read the clipboard from
+    /// a child process (for example the WebView2 host of Teams), so the family counts as the target.
+    /// </summary>
+    /// <param name="processId">The process to check.</param>
+    /// <param name="ancestorId">The expected ancestor.</param>
+    /// <param name="maxDepth">How many parent links to follow.</param>
+    public static bool IsSameOrDescendant(uint processId, uint ancestorId, int maxDepth = 4)
+    {
+        if (processId == 0 || ancestorId == 0)
+        {
+            return false;
+        }
+
+        if (processId == ancestorId)
+        {
+            return true;
+        }
+
+        var parents = SnapshotParents();
+        var current = processId;
+        for (var depth = 0; depth < maxDepth && parents.TryGetValue(current, out var parent) && parent != 0 && parent != current; depth++)
+        {
+            if (parent == ancestorId)
+            {
+                return true;
+            }
+
+            current = parent;
+        }
+
+        return false;
+    }
+
+    private static Dictionary<uint, uint> SnapshotParents()
+    {
+        var parents = new Dictionary<uint, uint>();
+        var snapshot = NativeMethods.CreateToolhelp32Snapshot(NativeMethods.Th32csSnapProcess, 0);
+        if (snapshot == -1 || snapshot == 0)
+        {
+            return parents;
+        }
+
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessEntry32>() };
+            if (!NativeMethods.Process32FirstW(snapshot, ref entry))
+            {
+                return parents;
+            }
+
+            do
+            {
+                parents[entry.ProcessId] = entry.ParentProcessId;
+            }
+            while (NativeMethods.Process32NextW(snapshot, ref entry));
+        }
+        finally
+        {
+            NativeMethods.CloseHandle(snapshot);
+        }
+
+        return parents;
+    }
+}

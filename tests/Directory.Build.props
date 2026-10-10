@@ -1,0 +1,8 @@
+<!-- Velotext: shared settings for test projects. Test methods are named as sentences, so per-method XML docs are not required; each test class still carries a summary. -->
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CS1591;CA1707;CA1515;CA1062;CA2007</NoWarn>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,91 @@
+<!-- Velotext: the settings window (startup, expansion, new triggers, formatting, appearance, data, about). -->
+<Window x:Class="Velotext.App.Views.SettingsWindow"
+        Background="{DynamicResource Velotext.Bg}"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:Velotext.App.Views"
+        xmlns:editing="clr-namespace:Velotext.App.Editing"
+        Title="Velotext settings"
+        Width="620" Height="720" MinWidth="480" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        FontFamily="{StaticResource Velotext.UiFont}"
+        FontSize="{StaticResource Velotext.BodySize}"
+        Icon="/Velotext;component/Assets/velotext.ico">
+  <Window.Resources>
+    <views:NullToVisibilityConverter x:Key="VisibleWhenSet" />
+    <Style x:Key="Heading" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="{StaticResource Velotext.SubtitleSize}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Margin" Value="0,24,0,12" />
+    </Style>
+    <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+      <Setter Property="Margin" Value="0,0,0,8" />
+    </Style>
+  </Window.Resources>
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <StackPanel Margin="28,4,28,28" MaxWidth="560">
+      <TextBlock Style="{StaticResource Heading}" Text="Startup" />
+      <CheckBox IsChecked="{Binding StartWithWindows}" Content="Start Velotext when I sign in to Windows" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Text="{Binding AutostartNote}" Margin="28,0,0,8"
+                 Visibility="{Binding AutostartNote, Converter={StaticResource VisibleWhenSet}}" />
+
+      <TextBlock Style="{StaticResource Heading}" Text="Expansion" />
+      <CheckBox IsChecked="{Binding UndoWithBackspace}" Content="Press Backspace right after an expansion to undo it" />
+      <TextBlock Text="Pause hotkey" Margin="0,8,0,6" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+      <editing:HotkeyBox Gesture="{Binding PauseHotkey}" Width="260" HorizontalAlignment="Left" Padding="10,6" AutomationProperties.Name="Pause hotkey" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Text="Press a key combination with Ctrl, Alt or Win. Press Backspace to clear it." Margin="0,6,0,0" />
+      <TextBlock Text="{Binding PauseHotkeyProblem}" Margin="0,6,0,0" Foreground="{DynamicResource Velotext.Err}" TextWrapping="Wrap"
+                 Visibility="{Binding PauseHotkeyProblem, Converter={StaticResource VisibleWhenSet}}" />
+
+      <TextBlock Style="{StaticResource Heading}" Text="New typed-text triggers" />
+      <CheckBox IsChecked="{Binding DefaultCaseSensitive}" Content="Match case" />
+      <CheckBox IsChecked="{Binding DefaultImmediate}" Content="Expand immediately" />
+      <CheckBox IsChecked="{Binding DefaultWordStart}" Content="Start of word only" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Text="These options apply to triggers that you create from now on." />
+
+      <TextBlock Style="{StaticResource Heading}" Text="Formatted text" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,0,0,10"
+                 Text="Word and classic Outlook need a font for formatted phrases. Use the font of your emails. Browsers, Teams and new Outlook use their own font." />
+      <StackPanel Orientation="Horizontal">
+        <ComboBox Width="260" IsEditable="True" ItemsSource="{Binding FontNames}" Text="{Binding FontName, UpdateSourceTrigger=LostFocus}"
+                  AutomationProperties.Name="Font" Margin="0,0,12,0" />
+        <ComboBox Width="90" IsEditable="True" Text="{Binding FontSize, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Font size">
+          <ComboBoxItem Content="9" />
+          <ComboBoxItem Content="10" />
+          <ComboBoxItem Content="10.5" />
+          <ComboBoxItem Content="11" />
+          <ComboBoxItem Content="12" />
+          <ComboBoxItem Content="14" />
+        </ComboBox>
+      </StackPanel>
+
+      <TextBlock Style="{StaticResource Heading}" Text="Appearance" />
+      <ComboBox Width="260" HorizontalAlignment="Left" SelectedIndex="{Binding ThemeIndex}" AutomationProperties.Name="Theme">
+        <ComboBoxItem Content="Dark" />
+        <ComboBoxItem Content="Light" />
+        <ComboBoxItem Content="Same as Windows" />
+      </ComboBox>
+
+      <TextBlock Style="{StaticResource Heading}" Text="Advanced" />
+      <TextBlock Text="Paste wait time (seconds)" Margin="0,0,0,6" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+      <Slider Minimum="0.3" Maximum="10" TickFrequency="0.1" IsSnapToTickEnabled="True" Value="{Binding PasteTimeoutSeconds}" Width="260" HorizontalAlignment="Left"
+              AutomationProperties.Name="Paste wait time in seconds" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="1" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,6,0,0"
+                 Text="Velotext puts your clipboard back as soon as the app has read the phrase. This is the longest it waits when the app does not confirm. Increase it only when phrases arrive incomplete in a slow app." />
+
+      <TextBlock Style="{StaticResource Heading}" Text="Data" />
+      <TextBlock Text="{Binding DataDirectory}" TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+      <WrapPanel>
+        <Button Content="Open data folder" Command="{Binding OpenDataFolderCommand}" Margin="0,0,8,8" />
+        <Button Content="Restore a backup" Command="{Binding RestoreBackupCommand}" Margin="0,0,8,8" />
+        <Button Content="Open log folder" Command="{Binding OpenLogFolderCommand}" Margin="0,0,8,8" />
+      </WrapPanel>
+
+      <TextBlock Style="{StaticResource Heading}" Text="About" />
+      <TextBlock Text="{Binding Version}" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,6,0,0"
+                 Text="Velotext is free software under the MIT License. It keeps only the last few typed characters in memory to find triggers. It never saves or sends what you type." />
+    </StackPanel>
+  </ScrollViewer>
+</Window>

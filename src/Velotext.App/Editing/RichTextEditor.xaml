@@ -1,0 +1,55 @@
+<!-- Velotext: the phrase text editor: a small formatting toolbar above a rich text box. -->
+<UserControl x:Class="Velotext.App.Editing.RichTextEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="clr-namespace:Velotext.App.Views"
+             x:Name="Root">
+  <DockPanel>
+    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+      <ToggleButton x:Name="BoldButton" Style="{StaticResource Velotext.FormatToggle}" Click="OnBold"
+                    ToolTip="Bold (Ctrl+B)" AutomationProperties.Name="Bold">
+        <TextBlock Text="B" FontWeight="Bold" />
+      </ToggleButton>
+      <ToggleButton x:Name="ItalicButton" Style="{StaticResource Velotext.FormatToggle}" Click="OnItalic"
+                    ToolTip="Italic (Ctrl+I)" AutomationProperties.Name="Italic">
+        <TextBlock Text="I" FontStyle="Italic" FontFamily="Georgia" />
+      </ToggleButton>
+      <ToggleButton x:Name="UnderlineButton" Style="{StaticResource Velotext.FormatToggle}" Click="OnUnderline"
+                    ToolTip="Underline (Ctrl+U)" AutomationProperties.Name="Underline">
+        <TextBlock Text="U" TextDecorations="Underline" />
+      </ToggleButton>
+      <ToggleButton x:Name="StrikeButton" Style="{StaticResource Velotext.FormatToggle}" Click="OnStrikethrough"
+                    ToolTip="Strikethrough" AutomationProperties.Name="Strikethrough">
+        <TextBlock Text="S" TextDecorations="Strikethrough" />
+      </ToggleButton>
+      <Rectangle Width="1" Margin="8,6" Fill="{DynamicResource Velotext.StrokeSubtle}" />
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnBullets"
+              ToolTip="Bulleted list" AutomationProperties.Name="Bulleted list">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE8FD;" />
+      </Button>
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnNumbering"
+              ToolTip="Numbered list" AutomationProperties.Name="Numbered list">
+        <TextBlock Text="1." FontWeight="SemiBold" />
+      </Button>
+      <Rectangle Width="1" Margin="8,6" Fill="{DynamicResource Velotext.StrokeSubtle}" />
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnLink"
+              ToolTip="Add or change a link" AutomationProperties.Name="Link">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE71B;" />
+      </Button>
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnClearFormatting"
+              ToolTip="Clear formatting" AutomationProperties.Name="Clear formatting">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE894;" />
+      </Button>
+    </StackPanel>
+    <RichTextBox x:Name="Editor"
+                 AcceptsTab="True"
+                 AcceptsReturn="True"
+                 VerticalScrollBarVisibility="Auto"
+                 Padding="8,8"
+                 MinHeight="160"
+                 AutomationProperties.Name="Phrase text"
+                 TextChanged="OnTextChanged"
+                 SelectionChanged="OnSelectionChanged"
+                 LostKeyboardFocus="OnLostFocus" />
+  </DockPanel>
+</UserControl>

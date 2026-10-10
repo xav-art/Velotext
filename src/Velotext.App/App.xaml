@@ -1,0 +1,9 @@
+<!-- Velotext: application definition. Theme dictionaries (Fluent, warm palette, shared styles) are added by ThemeService at start-up. -->
+<Application x:Class="Velotext.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnExplicitShutdown">
+  <Application.Resources>
+    <ResourceDictionary />
+  </Application.Resources>
+</Application>

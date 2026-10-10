@@ -1,0 +1,21 @@
+<!-- Velotext: shared MSBuild settings for every project (language, analyzers, documentation, versioning). -->
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <!-- Descriptions are mandatory: missing XML docs on public members (CS1591) fail the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Deterministic>true</Deterministic>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <Product>Velotext</Product>
+    <Company>Velotext contributors</Company>
+    <Authors>Velotext contributors</Authors>
+    <Copyright>Copyright (c) 2026 Velotext contributors</Copyright>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <NeutralLanguage>en</NeutralLanguage>
+  </PropertyGroup>
+</Project>
