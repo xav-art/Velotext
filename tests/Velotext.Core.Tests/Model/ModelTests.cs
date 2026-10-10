@@ -164,4 +164,17 @@ public sealed class ModelTests
     [Fact]
     public void Standard_shortcut_message_names_the_shortcut() =>
         Assert.Equal("Ctrl+V is a standard shortcut in most apps. Choose a different hotkey.", new HotkeyGesture(HotkeyModifiers.Control, 0x56).ValidationError);
+
+    [Fact]
+    public void Unusable_window_placements_are_dropped()
+    {
+        var good = new WindowPlacement { Left = -1200, Top = 10, Width = 1000, Height = 700, Maximized = true };
+
+        Assert.Equal(good, new AppSettings { MainWindow = good }.Normalize().MainWindow);
+        Assert.Null(new AppSettings { MainWindow = good with { Width = 100 } }.Normalize().MainWindow);
+        Assert.Null(new AppSettings { MainWindow = good with { Height = double.NaN } }.Normalize().MainWindow);
+        Assert.Null(new AppSettings { MainWindow = good with { Left = double.PositiveInfinity } }.Normalize().MainWindow);
+        Assert.Null(new AppSettings { MainWindow = good with { Width = 50_000 } }.Normalize().MainWindow);
+        Assert.Null(new AppSettings().Normalize().MainWindow);
+    }
 }

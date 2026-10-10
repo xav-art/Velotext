@@ -175,4 +175,36 @@ public sealed class UiRenderTests : IDisposable
             }
         }
     }
+
+    [Fact]
+    public void Main_window_reopens_where_it_was_and_ignores_places_off_screen() => WpfThread.Run(() =>
+    {
+        using var themeService = new ThemeService(Application.Current);
+        themeService.Apply(AppTheme.Dark);
+        using var vm = _env.CreateMainViewModel();
+        var onScreen = new WindowPlacement
+        {
+            Left = SystemParameters.VirtualScreenLeft + 40,
+            Top = SystemParameters.VirtualScreenTop + 40,
+            Width = 900,
+            Height = 600,
+        };
+
+        var window = new MainWindow(vm) { ShowActivated = false };
+        window.ApplyPlacement(onScreen);
+        Assert.Equal(WindowStartupLocation.Manual, window.WindowStartupLocation);
+        var captured = window.CapturePlacement();
+        Assert.Equal(onScreen with { Maximized = false }, captured);
+
+        var lost = new MainWindow(vm);
+        lost.ApplyPlacement(onScreen with { Left = -100_000 });
+        Assert.Equal(WindowStartupLocation.CenterScreen, lost.WindowStartupLocation);
+        lost.ApplyPlacement(onScreen with { Width = 10 });
+        Assert.Equal(WindowStartupLocation.CenterScreen, lost.WindowStartupLocation);
+
+        var maximized = new MainWindow(vm);
+        maximized.ApplyPlacement(onScreen with { Maximized = true });
+        Assert.Equal(WindowState.Maximized, maximized.WindowState);
+        Assert.False(MainWindow.IsOnScreen(onScreen with { Top = SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight + 10 }));
+    });
 }

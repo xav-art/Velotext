@@ -72,6 +72,8 @@ try {
         Invoke-Step 'Publish' {
             dotnet publish src/Velotext.App/Velotext.App.csproj -c Release -r win-x64 --self-contained true -p:Version=$Version -p:PublishSingleFile=false -p:VelotextRelease=true -o $publishDir
         }
+        # The release folder only holds generated files; start it empty so a rebuild of the same version works.
+        if (Test-Path $releaseDir) { Remove-Item $releaseDir -Recurse -Force }
         Invoke-Step 'Restore tools' { dotnet tool restore }
         Invoke-Step 'Pack installer' {
             dotnet vpk pack --packId Velotext --packVersion $Version --packDir $publishDir --mainExe Velotext.exe --packTitle Velotext --packAuthors 'Velotext contributors' --icon src/Velotext.App/Assets/velotext.ico --outputDir $releaseDir --runtime win-x64

@@ -102,6 +102,7 @@ public sealed partial class App : Application, IDisposable
         _mainViewModel = new MainViewModel(_library, _settings, _usage, _runtime, _dialogs, new WpfUiDispatcher(Dispatcher), time);
         _mainViewModel.SettingsRequested += (_, _) => ShowSettings();
         _mainWindow = new MainWindow(_mainViewModel);
+        _mainWindow.ApplyPlacement(_settings.Current.MainWindow);
         _mainWindow.CloseRequested += OnMainWindowClosing;
         MainWindow = _mainWindow;
 
@@ -248,6 +249,7 @@ public sealed partial class App : Application, IDisposable
 
         e.Cancel = true;
         _mainViewModel?.CommitNow();
+        SavePlacement();
         _mainWindow?.Hide();
         if (_settings is { Current.TrayHintShown: false })
         {
@@ -259,9 +261,23 @@ public sealed partial class App : Application, IDisposable
     private void ExitApplication()
     {
         _exiting = true;
+        if (_mainWindow is { IsVisible: true })
+        {
+            SavePlacement();
+        }
         _settingsWindow?.Close();
         _mainWindow?.Close();
         Shutdown();
+    }
+
+    /// <summary>Remembers where the main window is, so it opens there next time.</summary>
+    private void SavePlacement()
+    {
+        if (_mainWindow is { } window && _settings is { } settings)
+        {
+            var placement = window.CapturePlacement();
+            settings.Update(s => s with { MainWindow = placement });
+        }
     }
 
     private void SaveEverything()

@@ -31,6 +31,36 @@ public sealed record TriggerDefaults
     public bool WordStart { get; init; } = true;
 }
 
+/// <summary>Where the main window was and how large, in device-independent units, so it opens there again.</summary>
+public sealed record WindowPlacement
+{
+    /// <summary>Smallest width kept (the window's minimum).</summary>
+    public const double MinWidth = 760;
+
+    /// <summary>Smallest height kept (the window's minimum).</summary>
+    public const double MinHeight = 480;
+
+    /// <summary>Left edge.</summary>
+    public double Left { get; init; }
+
+    /// <summary>Top edge.</summary>
+    public double Top { get; init; }
+
+    /// <summary>Width.</summary>
+    public double Width { get; init; }
+
+    /// <summary>Height.</summary>
+    public double Height { get; init; }
+
+    /// <summary>True when the window was maximized; the other values are then its normal size and place.</summary>
+    public bool Maximized { get; init; }
+
+    /// <summary>True when every value is a usable number and the size is not below the window's minimum.</summary>
+    public bool IsValid =>
+        double.IsFinite(Left) && double.IsFinite(Top) && double.IsFinite(Width) && double.IsFinite(Height)
+        && Width >= MinWidth && Height >= MinHeight && Width <= 20000 && Height <= 20000;
+}
+
 /// <summary>User preferences. Every value has a safe default so a missing or partial file still works.</summary>
 public sealed record AppSettings
 {
@@ -76,6 +106,9 @@ public sealed record AppSettings
     /// <summary>True once the user has seen the "still running in the tray" hint.</summary>
     public bool TrayHintShown { get; init; }
 
+    /// <summary>Where the main window was when it was last closed, or <c>null</c> to open it centred.</summary>
+    public WindowPlacement? MainWindow { get; init; }
+
     /// <summary>Returns a copy with out-of-range values replaced by safe ones.</summary>
     public AppSettings Normalize() => this with
     {
@@ -85,5 +118,6 @@ public sealed record AppSettings
         PasteTimeoutMilliseconds = Math.Clamp(PasteTimeoutMilliseconds, MinPasteTimeoutMilliseconds, MaxPasteTimeoutMilliseconds),
         Theme = Enum.IsDefined(Theme) ? Theme : AppTheme.Dark,
         PauseHotkey = PauseHotkey is { } gesture && gesture.ValidationError is null ? gesture : null,
+        MainWindow = MainWindow is { IsValid: true } placement ? placement : null,
     };
 }

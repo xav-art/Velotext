@@ -72,6 +72,7 @@ public sealed class DesktopTests
             var session = await clipboard.BeginPasteAsync(new ClipboardPayload("phrase", html, "{\\rtf1 x}"), (uint)Environment.ProcessId);
             Assert.NotNull(session);
             Assert.False(session.Consumed.IsCompleted);
+            session.MarkPasteSent();
 
             // Act as the target application: open the clipboard from a window of this process and read.
             var htmlFormat = NativeMethods.RegisterClipboardFormatW("HTML Format");
@@ -137,5 +138,40 @@ public sealed class DesktopTests
         await monitor.ReinstallAsync();
         monitor.Post(s => s.Enabled = false);
         Assert.False(await monitor.InvokeAsync(s => s.Enabled));
+    }
+
+    [Fact(SkipUnless = nameof(Enabled), Skip = SkipReason)]
+    public async Task A_read_before_the_paste_keystroke_or_by_another_program_does_not_confirm_the_paste()
+    {
+        using var clipboard = new ClipboardService(NullLogger<ClipboardService>.Instance);
+        using var reader = new MessageLoopThread("Test reader", ThreadPriority.Normal, null, _ => { });
+        var userText = await reader.InvokeAsync(() => ReadText(NativeMethods.CfUnicodeText, reader.WindowHandle, utf16: true));
+        var htmlFormat = NativeMethods.RegisterClipboardFormatW("HTML Format");
+        try
+        {
+            Assert.True(await clipboard.CopyAsync(new ClipboardPayload("original", null, null)));
+
+            // The target reads before the paste keystroke: it gets the phrase, but the paste is not confirmed.
+            var early = await clipboard.BeginPasteAsync(new ClipboardPayload("phrase", "Version:0.9\r\nx", null), (uint)Environment.ProcessId);
+            Assert.NotNull(early);
+            Assert.Equal("Version:0.9\r\nx", await reader.InvokeAsync(() => ReadText(htmlFormat, reader.WindowHandle, utf16: false)));
+            Assert.False(early.Consumed.IsCompleted);
+            await clipboard.RestoreAsync(early);
+            Assert.Equal("original", await reader.InvokeAsync(() => ReadText(NativeMethods.CfUnicodeText, reader.WindowHandle, utf16: true)));
+
+            // Another program reads after the keystroke: it is served, the paste stays unconfirmed, and it is noted.
+            var other = await clipboard.BeginPasteAsync(new ClipboardPayload("phrase", null, null), targetProcessId: 4);
+            Assert.NotNull(other);
+            other.MarkPasteSent();
+            Assert.Equal("phrase", await reader.InvokeAsync(() => ReadText(NativeMethods.CfUnicodeText, reader.WindowHandle, utf16: true)));
+            Assert.False(other.Consumed.IsCompleted);
+            Assert.True(other.OtherReaderSeen);
+            await clipboard.RestoreAsync(other);
+            Assert.Equal("original", await reader.InvokeAsync(() => ReadText(NativeMethods.CfUnicodeText, reader.WindowHandle, utf16: true)));
+        }
+        finally
+        {
+            await clipboard.CopyAsync(new ClipboardPayload(userText ?? string.Empty, null, null));
+        }
     }
 }

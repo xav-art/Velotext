@@ -120,7 +120,11 @@ public sealed partial class LibraryService : IDisposable
         LoadStatus = result.Status;
         LoadDetail = result.Detail;
         var library = result.Value ?? PhraseLibrary.CreateStarter(_time.GetUtcNow());
-        if (result.Status != LoadStatus.Loaded)
+        if (result.Status == LoadStatus.Missing)
+        {
+            LogFirstRun(_logger);
+        }
+        else if (result.Status != LoadStatus.Loaded)
         {
             LogLoad(_logger, result.Status, result.Detail ?? string.Empty);
         }
@@ -267,6 +271,9 @@ public sealed partial class LibraryService : IDisposable
 
         SaveStateChanged?.Invoke(this, state);
     }
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "No library yet; Velotext created the starter library.")]
+    private static partial void LogFirstRun(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Library loaded with status {Status} ({Detail}).")]
     private static partial void LogLoad(ILogger logger, LoadStatus status, string detail);

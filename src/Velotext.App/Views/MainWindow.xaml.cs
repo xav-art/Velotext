@@ -41,6 +41,52 @@ public sealed partial class MainWindow : Window
     /// <summary>Raised when the user closes the window; the app decides whether to hide or exit.</summary>
     public event EventHandler<CancelEventArgs>? CloseRequested;
 
+    /// <summary>
+    /// Puts the window where it was last time. A place that no longer fits the screens (a monitor was
+    /// removed) is ignored, and the window opens centred instead.
+    /// </summary>
+    /// <param name="placement">The saved placement, or <c>null</c>.</param>
+    public void ApplyPlacement(Core.Settings.WindowPlacement? placement)
+    {
+        if (placement is not { IsValid: true } || !IsOnScreen(placement))
+        {
+            return;
+        }
+
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        Left = placement.Left;
+        Top = placement.Top;
+        Width = placement.Width;
+        Height = placement.Height;
+        if (placement.Maximized)
+        {
+            WindowState = WindowState.Maximized;
+        }
+    }
+
+    /// <summary>Returns the current place and size; for a maximized window, its normal place and size.</summary>
+    public Core.Settings.WindowPlacement CapturePlacement()
+    {
+        var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, ActualWidth > 0 ? ActualWidth : Width, ActualHeight > 0 ? ActualHeight : Height) : RestoreBounds;
+        return new Core.Settings.WindowPlacement
+        {
+            Left = bounds.Left,
+            Top = bounds.Top,
+            Width = bounds.Width,
+            Height = bounds.Height,
+            Maximized = WindowState == WindowState.Maximized,
+        };
+    }
+
+    /// <summary>True when enough of the title bar area lies on the screens to grab the window.</summary>
+    internal static bool IsOnScreen(Core.Settings.WindowPlacement placement)
+    {
+        var screens = new Rect(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenWidth, SystemParameters.VirtualScreenHeight);
+        var titleBar = new Rect(placement.Left, placement.Top, placement.Width, 40);
+        var visible = Rect.Intersect(screens, titleBar);
+        return !visible.IsEmpty && visible.Width >= 120 && visible.Height >= 20;
+    }
+
     /// <summary>Shows the window and brings it to the front.</summary>
     public void ShowAndActivate()
     {
