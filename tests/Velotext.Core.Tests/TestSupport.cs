@@ -54,6 +54,7 @@ internal sealed class FakeTranslator : IKeyTranslator
     public const int Left = 0x25;
     public const int Shift = 0x10;
     public const int Dead = 0xDE;
+    public const int TwoCharacters = 0xDF;
 
     public KeyMeaning Translate(in KeyStroke key) => key.VirtualKey switch
     {
@@ -61,6 +62,7 @@ internal sealed class FakeTranslator : IKeyTranslator
         Left => KeyMeaning.Reset,
         Shift => KeyMeaning.Modifier,
         Dead => KeyMeaning.DeadKey,
+        TwoCharacters => KeyMeaning.ForText(".s"),
         0xAD => KeyMeaning.Ignore,
         _ => KeyMeaning.ForText(((char)key.ScanCode).ToString()),
     };

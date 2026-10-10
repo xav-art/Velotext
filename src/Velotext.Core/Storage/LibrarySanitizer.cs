@@ -131,7 +131,7 @@ public static class LibrarySanitizer
             {
                 case AutotextTrigger autotext:
                     var text = new string([.. (autotext.Text ?? string.Empty).Where(c => !char.IsControl(c))]);
-                    triggers.Add(autotext with { Text = text.Length > AutotextTrigger.MaxLength ? text[..AutotextTrigger.MaxLength] : text });
+                    triggers.Add(autotext with { Text = Truncate(text, AutotextTrigger.MaxLength) });
                     break;
                 case HotkeyTrigger hotkey when hotkey.Gesture.Key is > 0 and < 0xFF:
                     triggers.Add(hotkey);
@@ -157,12 +157,16 @@ public static class LibrarySanitizer
         };
     }
 
+    /// <summary>Cuts text to at most <paramref name="length"/> UTF-16 units without splitting a surrogate pair (an emoji).</summary>
+    internal static string Truncate(string text, int length) =>
+        text.Length <= length ? text : text[..(char.IsHighSurrogate(text[length - 1]) ? length - 1 : length)];
+
     private static string CleanName(string? name, string fallback)
     {
         var clean = new string([.. (name ?? string.Empty).Select(c => char.IsControl(c) ? ' ' : c)]).Trim();
         if (clean.Length > MaxNameLength)
         {
-            clean = clean[..MaxNameLength].TrimEnd();
+            clean = Truncate(clean, MaxNameLength).TrimEnd();
         }
 
         return clean.Length == 0 ? fallback : clean;

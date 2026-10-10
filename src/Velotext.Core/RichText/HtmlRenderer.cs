@@ -66,6 +66,14 @@ public static class HtmlRenderer
                     else
                     {
                         RenderInlines(paragraph.Inlines, html);
+
+                        // Browsers ignore a final <br> in a block, so a paragraph that ends with a line
+                        // break needs a second one to keep the empty line. Word honors the first one, so the
+                        // extra break sits in the conditional that Word itself writes for this case.
+                        if (paragraph.Inlines[^1] is LineBreak)
+                        {
+                            html.Append("<![if !supportLineBreakNewLine]><br><![endif]>");
+                        }
                     }
 
                     html.Append("</p>");

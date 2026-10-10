@@ -28,6 +28,9 @@ internal enum TriggerOverlap
 
     /// <summary>The later trigger never fires.</summary>
     Full = 2,
+
+    /// <summary>The earlier trigger wins at the start of a word; the later one still fires inside words.</summary>
+    AtWordStart = 3,
 }
 
 /// <summary>A problem with one trigger of one phrase.</summary>
@@ -107,13 +110,22 @@ public static class TriggerValidator
                     continue;
                 }
 
-                duplicates.Add(usable[i].Trigger);
+                // Only a full duplicate never fires; a partial one still fires sometimes, so it is also checked for blockers.
+                if (overlap == TriggerOverlap.Full)
+                {
+                    duplicates.Add(usable[i].Trigger);
+                }
+
                 var owner = descriptions[earlier.Phrase.Id];
-                issues.Add(overlap == TriggerOverlap.Full
-                    ? new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Error,
-                        string.Create(CultureInfo.InvariantCulture, $"\"{owner}\" already uses \"{earlier.Trigger.Text}\". Change this trigger."))
-                    : new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Warning,
-                        string.Create(CultureInfo.InvariantCulture, $"If you type \"{earlier.Trigger.Text}\" exactly, Velotext inserts \"{owner}\". Turn on Match case or change this trigger.")));
+                issues.Add(overlap switch
+                {
+                    TriggerOverlap.Full => new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Error,
+                        string.Create(CultureInfo.InvariantCulture, $"\"{owner}\" already uses \"{earlier.Trigger.Text}\". Change this trigger.")),
+                    TriggerOverlap.AtWordStart => new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Warning,
+                        string.Create(CultureInfo.InvariantCulture, $"At the start of a word, \"{earlier.Trigger.Text}\" inserts \"{owner}\". Change this trigger.")),
+                    _ => new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Warning,
+                        string.Create(CultureInfo.InvariantCulture, $"If you type \"{earlier.Trigger.Text}\" exactly, Velotext inserts \"{owner}\". Turn on Match case or change this trigger.")),
+                });
                 break;
             }
         }
@@ -208,18 +220,23 @@ public static class TriggerValidator
             return TriggerOverlap.None;
         }
 
+        TriggerOverlap casing;
         if (!earlier.CaseSensitive)
         {
-            return TriggerOverlap.Full; // the earlier one matches every casing
+            casing = TriggerOverlap.Full; // the earlier one matches every casing
         }
-
-        // The earlier one matches only its exact casing.
-        if (later.CaseSensitive)
+        else if (later.CaseSensitive)
         {
-            return string.Equals(earlier.Text, later.Text, StringComparison.Ordinal) ? TriggerOverlap.Full : TriggerOverlap.None;
+            // Both match only their exact casing.
+            casing = string.Equals(earlier.Text, later.Text, StringComparison.Ordinal) ? TriggerOverlap.Full : TriggerOverlap.None;
+        }
+        else
+        {
+            casing = TriggerOverlap.Partial;
         }
 
-        return TriggerOverlap.Partial;
+        // An earlier trigger limited to the start of a word leaves the later one free inside words.
+        return casing == TriggerOverlap.Full && earlier.WordStart && !later.WordStart ? TriggerOverlap.AtWordStart : casing;
     }
 
     private static AutotextEntry? FindBlocker(AutotextTrigger trigger, TriggerIndex index)
@@ -236,9 +253,10 @@ public static class TriggerValidator
 
             var isLast = i == text.Length - 1;
 
-            // On the last character an immediate trigger of the same length is a duplicate (reported
-            // separately); a delimiter trigger is pre-empted by any immediate match there.
-            if (!isLast || (!trigger.Immediate && match.Delimiter is null))
+            // On the last character, another immediate trigger of the same text is a duplicate (reported
+            // separately). A delimiter trigger completed by this last character (for example "end" when the
+            // trigger is "end.") always wins, and any immediate match pre-empts a delimiter trigger.
+            if (!isLast || match.Delimiter is not null || !trigger.Immediate)
             {
                 return match.Entry;
             }

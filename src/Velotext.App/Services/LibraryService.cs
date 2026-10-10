@@ -107,9 +107,16 @@ public sealed partial class LibraryService : IDisposable
     public string? BackupDirectory => _store.BackupDirectory;
 
     /// <summary>Loads the library. A first run gets the starter library; a damaged file falls back to the newest backup.</summary>
+    /// <exception cref="LibraryUnavailableException">Another program keeps the library file locked.</exception>
     public void Load()
     {
         var result = _store.Load();
+        if (result.Status == LoadStatus.Unavailable)
+        {
+            // Never start with an empty library that a later save would write over the real one.
+            throw new LibraryUnavailableException(result.Detail ?? _store.Path);
+        }
+
         LoadStatus = result.Status;
         LoadDetail = result.Detail;
         var library = result.Value ?? PhraseLibrary.CreateStarter(_time.GetUtcNow());
@@ -266,4 +273,29 @@ public sealed partial class LibraryService : IDisposable
 
     [LoggerMessage(Level = LogLevel.Error, Message = "The library could not be saved.")]
     private static partial void LogSaveFailed(ILogger logger, Exception exception);
+}
+
+/// <summary>Another program keeps the library file locked, so Velotext cannot read it safely.</summary>
+public sealed class LibraryUnavailableException : IOException
+{
+    /// <summary>Creates the exception.</summary>
+    public LibraryUnavailableException()
+        : this("The library file is in use by another program.")
+    {
+    }
+
+    /// <summary>Creates the exception for a file.</summary>
+    /// <param name="message">The locked file or a message.</param>
+    public LibraryUnavailableException(string message)
+        : base(message)
+    {
+    }
+
+    /// <summary>Creates the exception with a cause.</summary>
+    /// <param name="message">The message.</param>
+    /// <param name="innerException">The cause.</param>
+    public LibraryUnavailableException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
 }

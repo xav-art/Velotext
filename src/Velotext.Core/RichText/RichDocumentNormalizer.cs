@@ -75,7 +75,8 @@ public static class RichDocumentNormalizer
                     {
                         if (run is not null)
                         {
-                            AppendText(runs, run.Text, run.Style);
+                            // Link text holds no line breaks; a break becomes a space so words stay apart.
+                            AppendText(runs, run.Text?.Replace("\r\n", " ", StringComparison.Ordinal).Replace('\r', ' ').Replace('\n', ' '), run.Style);
                         }
                     }
 

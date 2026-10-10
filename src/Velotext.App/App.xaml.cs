@@ -65,14 +65,28 @@ public sealed partial class App : Application, IDisposable
         var loggers = _loggers!;
         _settings = new SettingsService(_paths, loggers.CreateLogger<SettingsService>());
         _settings.Load();
-        _library = new LibraryService(_paths, time, loggers.CreateLogger<LibraryService>());
-        _library.Load();
-        _usage = new UsageService(_paths, time, loggers.CreateLogger<UsageService>());
-        _usage.Load();
-
         _theme = new ThemeService(this);
         _theme.Apply(_settings.Current.Theme);
         _dialogs = new DialogService();
+
+        _library = new LibraryService(_paths, time, loggers.CreateLogger<LibraryService>());
+        try
+        {
+            _library.Load();
+        }
+        catch (LibraryUnavailableException ex)
+        {
+            // Starting anyway would show an empty library and could save it over the real one.
+            LogLibraryUnavailable(_logger!, ex);
+            _dialogs.ShowError(
+                "Velotext cannot open your phrases",
+                "Another app is using your library file. Wait a moment, then start Velotext again. If this keeps happening, restart Windows.");
+            Shutdown(1);
+            return;
+        }
+
+        _usage = new UsageService(_paths, time, loggers.CreateLogger<UsageService>());
+        _usage.Load();
 
         _tray = new TrayService(new TrayActions(ShowMainWindow, TogglePause, ShowSettings, ExitApplication));
         _runtime = new ExpansionRuntime(_library, _settings, _usage, _tray, loggers, time);
@@ -273,6 +287,9 @@ public sealed partial class App : Application, IDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Velotext stopped.")]
     private static partial void LogStopped(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "The library file stayed locked by another program; Velotext did not start.")]
+    private static partial void LogLibraryUnavailable(ILogger logger, Exception exception);
 
     [LoggerMessage(Level = LogLevel.Critical, Message = "Unhandled error.")]
     private static partial void LogFatal(ILogger logger, Exception? exception);

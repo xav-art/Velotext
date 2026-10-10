@@ -35,7 +35,8 @@ public static class PlainTextRenderer
             switch (inline)
             {
                 case TextRun run:
-                    text.Append(run.Text);
+                    // Line ends inside a run (content that skipped normalizing) become one line break.
+                    text.Append(run.Text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n'));
                     break;
                 case LineBreak:
                     text.Append('\n');
@@ -43,10 +44,18 @@ public static class PlainTextRenderer
                 case Link link:
                     var linkText = string.Concat(link.Runs.Select(r => r.Text));
                     var url = LinkPolicy.Normalize(link.Url);
-                    text.Append(linkText);
-                    if (url is not null && !SameTarget(linkText, url))
+                    if (string.IsNullOrWhiteSpace(linkText))
                     {
-                        text.Append(" (").Append(url).Append(')');
+                        // A link without visible text still shows where it goes.
+                        text.Append(url ?? linkText);
+                    }
+                    else
+                    {
+                        text.Append(linkText);
+                        if (url is not null && !SameTarget(linkText, url))
+                        {
+                            text.Append(" (").Append(url).Append(')');
+                        }
                     }
 
                     break;

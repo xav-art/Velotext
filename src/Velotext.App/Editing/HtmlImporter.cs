@@ -133,14 +133,22 @@ public static class HtmlImporter
                 return;
             }
 
+            // Word wraps a line break that only browsers need in <![if !supportLineBreakNewLine]> ... <![endif]>.
+            var skipping = false;
             foreach (var child in node.ChildNodes)
             {
                 switch (child)
                 {
-                    case IText text:
+                    case IComment comment when comment.Data.StartsWith("[if !supportLineBreakNewLine]", StringComparison.OrdinalIgnoreCase):
+                        skipping = true;
+                        break;
+                    case IComment comment when comment.Data.StartsWith("[endif]", StringComparison.OrdinalIgnoreCase):
+                        skipping = false;
+                        break;
+                    case IText text when !skipping:
                         AddText(text.Data, style, link, preformatted);
                         break;
-                    case IElement element:
+                    case IElement element when !skipping:
                         VisitElement(element, style, link, preformatted, depth + 1);
                         break;
                 }

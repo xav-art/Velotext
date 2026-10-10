@@ -21,6 +21,12 @@ public enum LoadStatus
 
     /// <summary>The file was damaged and no usable backup exists; the damaged file was set aside.</summary>
     Failed = 3,
+
+    /// <summary>
+    /// Another program kept the file locked; nothing was read or changed. The caller must not save over
+    /// the file, because it may hold newer data than anything Velotext could load.
+    /// </summary>
+    Unavailable = 4,
 }
 
 /// <summary>Result of loading a stored file.</summary>
@@ -41,6 +47,8 @@ public sealed record LoadResult<T>(T? Value, LoadStatus Status, string? Detail =
 public sealed class JsonFileStore<T>
     where T : class
 {
+    private const int LockedReadAttempts = 6;
+
     private readonly JsonTypeInfo<T> _typeInfo;
     private readonly TimeProvider _time;
     private readonly Lock _gate = new();
@@ -72,35 +80,50 @@ public sealed class JsonFileStore<T>
     /// <summary>Minimum time between two rolling backups within one session.</summary>
     public TimeSpan BackupInterval { get; init; } = TimeSpan.FromHours(24);
 
-    /// <summary>Loads the file, falling back to the newest readable backup when it is damaged.</summary>
+    /// <summary>
+    /// Loads the file. A file that another program locks for a moment (antivirus, sync tools) is read
+    /// again after a short wait and is never mistaken for a damaged one. A damaged or missing file falls
+    /// back to the newest readable copy: an unfinished save (.tmp), the previous version (.bak) or a
+    /// rolling backup.
+    /// </summary>
     public LoadResult<T> Load()
     {
         lock (_gate)
         {
             if (!File.Exists(Path))
             {
-                // A crash between the two steps of a first save can leave only the .bak behind.
-                var orphan = TryRead(Path + ".bak");
-                return orphan is null ? new LoadResult<T>(null, LoadStatus.Missing) : new LoadResult<T>(orphan, LoadStatus.Recovered, Path + ".bak");
+                // A crash during a save, or a deleted file, can leave only copies behind.
+                var orphan = NewestReadableCopy();
+                return orphan is { } found ? new LoadResult<T>(found.Value, LoadStatus.Recovered, found.File) : new LoadResult<T>(null, LoadStatus.Missing);
             }
 
-            var value = TryRead(Path);
-            if (value is not null)
+            for (var attempt = 1; ; attempt++)
             {
-                return new LoadResult<T>(value, LoadStatus.Loaded);
-            }
-
-            var setAside = SetAsideDamagedFile();
-            foreach (var candidate in BackupCandidates())
-            {
-                var recovered = TryRead(candidate);
-                if (recovered is not null)
+                try
                 {
-                    return new LoadResult<T>(recovered, LoadStatus.Recovered, candidate);
+                    var value = Read(Path);
+                    if (value is not null)
+                    {
+                        return new LoadResult<T>(value, LoadStatus.Loaded);
+                    }
+
+                    break;
+                }
+                catch (Exception ex) when (IsFileAccessError(ex))
+                {
+                    if (attempt >= LockedReadAttempts)
+                    {
+                        return new LoadResult<T>(null, LoadStatus.Unavailable, Path);
+                    }
+
+                    Thread.Sleep(100 * attempt);
                 }
             }
 
-            return new LoadResult<T>(null, LoadStatus.Failed, setAside);
+            var setAside = SetAsideDamagedFile();
+            return NewestReadableCopy() is { } copy
+                ? new LoadResult<T>(copy.Value, LoadStatus.Recovered, copy.File)
+                : new LoadResult<T>(null, LoadStatus.Failed, setAside);
         }
     }
 
@@ -116,11 +139,12 @@ public sealed class JsonFileStore<T>
             BackUpIfDue();
 
             var temp = Path + ".tmp";
-            using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            Retry(() =>
             {
+                using var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
                 stream.Write(bytes);
                 stream.Flush(flushToDisk: true);
-            }
+            });
 
             Retry(() =>
             {
@@ -165,15 +189,9 @@ public sealed class JsonFileStore<T>
     {
         try
         {
-            if (!File.Exists(file))
-            {
-                return null;
-            }
-
-            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            return JsonSerializer.Deserialize(stream, _typeInfo);
+            return Read(file);
         }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or NotSupportedException or InvalidOperationException)
+        catch (Exception ex) when (IsFileAccessError(ex))
         {
             return null;
         }
@@ -181,13 +199,41 @@ public sealed class JsonFileStore<T>
 
     private string BackupPrefix => System.IO.Path.GetFileNameWithoutExtension(Path) + "-";
 
-    private IEnumerable<string> BackupCandidates()
+    /// <summary>Reads and parses a file. Returns <c>null</c> when it is missing or not valid; throws when it cannot be opened.</summary>
+    private T? Read(string file)
     {
-        yield return Path + ".bak";
-        foreach (var backup in ListBackups())
+        if (!File.Exists(file))
         {
-            yield return backup;
+            return null;
         }
+
+        using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        try
+        {
+            return JsonSerializer.Deserialize(stream, _typeInfo);
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The newest copy that can be read: an unfinished save, the previous version or a rolling backup.</summary>
+    private (T Value, string File)? NewestReadableCopy()
+    {
+        var candidates = new[] { Path + ".tmp", Path + ".bak" }
+            .Concat(ListBackups())
+            .Where(File.Exists)
+            .OrderByDescending(File.GetLastWriteTimeUtc);
+        foreach (var candidate in candidates)
+        {
+            if (TryRead(candidate) is { } value)
+            {
+                return (value, candidate);
+            }
+        }
+
+        return null;
     }
 
     private string SetAsideDamagedFile()

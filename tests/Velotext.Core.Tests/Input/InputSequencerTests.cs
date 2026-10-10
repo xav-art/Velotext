@@ -504,4 +504,52 @@ public sealed class InputSequencerTests
         var key = Keys.Down('a') with { Flags = KeyStrokeAttributes.KeyUp | KeyStrokeAttributes.Control | KeyStrokeAttributes.Alt };
         Assert.Equal(KeyStrokeAttributes.Control | KeyStrokeAttributes.Alt, key.Modifiers);
     }
+
+    [Fact]
+    public void A_key_that_types_several_characters_never_completes_a_trigger()
+    {
+        TypeText("brb");
+
+        // ".s" would complete "brb" with its first character; the application already has both.
+        Assert.Equal(KeyDecision.Pass, _sequencer.OnKey(Keys.DownVk(FakeTranslator.TwoCharacters)));
+
+        Assert.Empty(_sink.Expansions);
+        Assert.Equal("brb.s", _matcher.BufferText);
+    }
+
+    [Fact]
+    public void Enter_and_numpad_enter_are_paired_separately()
+    {
+        var enter = Keys.DownVk(0x0D);
+        var numpadEnter = enter with { Flags = KeyStrokeAttributes.Extended };
+        TypeText("TWOX");
+
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(numpadEnter));
+        Assert.Equal(KeyDecision.Pass, _sequencer.OnKey(enter with { Flags = KeyStrokeAttributes.KeyUp }));
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(numpadEnter with { Flags = KeyStrokeAttributes.Extended | KeyStrokeAttributes.KeyUp }));
+    }
+
+    [Fact]
+    public void Held_replay_keys_and_keys_still_coming_back_keep_their_order()
+    {
+        TypeText("TWOX");
+        _sequencer.OnKey(Keys.Down('a'));
+        _sequencer.OnKey(Keys.Up('a'));
+        _sequencer.OnKey(Keys.Down('b'));
+        _sequencer.CompleteOperation(_sink.Expansions[0].OperationId, OperationOutcome.None);
+        Assert.Equal(3, _sink.Replays[0].Count);
+
+        // The first replayed key starts a new operation (as if it completed a trigger); it comes back and is held.
+        var second = _sequencer.BeginOperation();
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Down('a', KeyOrigin.Replay)));
+        _sequencer.CompleteOperation(second, OperationOutcome.None);
+
+        // The rest of the first replay is still on its way, so nothing is sent yet.
+        Assert.Single(_sink.Replays);
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Up('a', KeyOrigin.Replay)));
+        Assert.Equal(KeyDecision.Swallow, _sequencer.OnKey(Keys.Down('b', KeyOrigin.Replay)));
+
+        var replay = _sink.Replays[1];
+        Assert.Equal(["a down", "a up", "b down"], replay.Select(k => $"{(char)k.ScanCode} {(k.IsKeyUp ? "up" : "down")}"));
+    }
 }

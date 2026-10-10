@@ -78,6 +78,23 @@ public sealed class AutotextMatcher
         return FindMatch(index, immediate: true);
     }
 
+    /// <summary>
+    /// Adds a typed character without looking for a match, so the buffer keeps up with the text in the
+    /// application. Used for keys that produce several characters at once.
+    /// </summary>
+    /// <param name="c">The character.</param>
+    public void Feed(char c)
+    {
+        if (c is '\r' or '\n' or '\t')
+        {
+            Reset();
+            return;
+        }
+
+        Append(c);
+        _seedLength = -1;
+    }
+
     /// <summary>Removes the last character, as Backspace does in the target application.</summary>
     public void OnBackspace()
     {

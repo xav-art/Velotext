@@ -470,4 +470,22 @@ public sealed class MainViewModelTests : IDisposable
         vm.ClearSearchCommand.Execute(null);
         Assert.True(vm.Recent.IsVisible);
     }
+
+    [Fact]
+    public void Locked_library_file_stops_loading_instead_of_starting_empty()
+    {
+        _env.Library.Flush();
+        Assert.True(File.Exists(_env.Paths.LibraryFile));
+        using var service = new LibraryService(_env.Paths, TimeProvider.System, Microsoft.Extensions.Logging.Abstractions.NullLogger<LibraryService>.Instance);
+
+        using (new FileStream(_env.Paths.LibraryFile, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var error = Assert.Throws<LibraryUnavailableException>(service.Load);
+            Assert.Equal(_env.Paths.LibraryFile, error.Message);
+        }
+
+        var inner = new InvalidOperationException("inner");
+        Assert.False(string.IsNullOrEmpty(new LibraryUnavailableException().Message));
+        Assert.Same(inner, new LibraryUnavailableException("m", inner).InnerException);
+    }
 }

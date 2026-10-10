@@ -184,4 +184,12 @@ public sealed class EditingTests
         Assert.Equal("only text", RichTextEditor.ReadPlain(data));
         Assert.Null(RichTextEditor.ReadPlain(new DataObject(DataFormats.Xaml, "<Section />")));
     });
+
+    [Fact]
+    public void Word_line_break_meant_only_for_browsers_is_skipped()
+    {
+        var doc = HtmlImporter.Parse("<p>Hi<br><![if !supportLineBreakNewLine]><br><![endif]></p><p>Next</p>");
+
+        Assert.Equal("Hi\r\n\r\nNext", PlainTextRenderer.Render(doc).TrimEnd());
+    }
 }

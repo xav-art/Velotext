@@ -274,4 +274,19 @@ public sealed class AutotextMatcherTests
         // The text before Enter or Tab is gone, so it cannot complete a trigger afterwards.
         Assert.Null(TypeAll(matcher, "ss"));
     }
+
+    [Fact]
+    public void Fed_characters_keep_the_buffer_in_step_without_matching()
+    {
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("ab"), Build.Auto("brb", immediate: false)) };
+
+        // "ab" is a trigger, but fed characters never match; the buffer still has them.
+        matcher.Feed('a');
+        matcher.Feed('b');
+        Assert.Equal("ab", matcher.BufferText);
+        Assert.NotNull(TypeAll(matcher, " brb "));
+
+        matcher.Feed('\r');
+        Assert.Equal(string.Empty, matcher.BufferText);
+    }
 }

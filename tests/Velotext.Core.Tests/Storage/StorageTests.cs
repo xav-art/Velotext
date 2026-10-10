@@ -197,16 +197,44 @@ public sealed class StorageTests : IDisposable
     }
 
     [Fact]
-    public void Locked_damaged_file_is_reported_in_place()
+    public void Locked_file_is_never_treated_as_damaged()
     {
-        var store = new JsonFileStore<PhraseLibrary>(Path.Combine(_dir, "library.json"), VelotextJsonContext.Default.PhraseLibrary, backupDirectory: null, _time);
-        File.WriteAllText(store.Path, "bad");
-        using var lockHandle = new FileStream(store.Path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var store = LibraryStore();
+        store.Save(Build.Library(Build.Phrase("real")));
+
+        LoadResult<PhraseLibrary> result;
+        using (new FileStream(store.Path, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            result = store.Load();
+        }
+
+        // Nothing was read or moved, so nothing can be saved over the real file by mistake.
+        Assert.Equal(LoadStatus.Unavailable, result.Status);
+        Assert.Null(result.Value);
+        Assert.Equal(store.Path, result.Detail);
+        Assert.Empty(Directory.GetFiles(_dir, "*.damaged-*"));
+        Assert.Equal(LoadStatus.Loaded, store.Load().Status);
+    }
+
+    [Fact]
+    public async Task Briefly_locked_file_loads_after_a_short_wait()
+    {
+        var store = LibraryStore();
+        store.Save(Build.Library(Build.Phrase("real")));
+        var holder = new FileStream(store.Path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var release = Task.Run(
+            async () =>
+            {
+                await Task.Delay(250);
+                await holder.DisposeAsync();
+            },
+            TestContext.Current.CancellationToken);
 
         var result = store.Load();
+        await release;
 
-        Assert.Equal(LoadStatus.Failed, result.Status);
-        Assert.Equal(store.Path, result.Detail);
+        Assert.Equal(LoadStatus.Loaded, result.Status);
+        Assert.Equal("real", Assert.Single(result.Value!.EnumeratePhrases()).Description);
     }
 
     [Fact]
@@ -425,4 +453,52 @@ public sealed class StorageTests : IDisposable
         Assert.Equal(new MisleadingLink("www.example.com/returns", "evil.example"), Assert.Single(preview.MisleadingLinks));
         Assert.Throws<ArgumentNullException>(() => ImportPreview.Describe(null!));
     }
+
+    [Fact]
+    public void Recovery_uses_the_newest_readable_copy()
+    {
+        var store = LibraryStore();
+        store.Save(Build.Library(Build.Phrase("old")));
+        store.Save(Build.Library(Build.Phrase("newest")));
+        File.Copy(store.Path, store.Path + ".tmp", overwrite: true);
+        File.WriteAllText(store.Path, "damaged");
+
+        // A crash during a save left a complete .tmp that is newer than the .bak and the rolling backups.
+        File.SetLastWriteTimeUtc(store.Path + ".tmp", DateTime.UtcNow.AddMinutes(1));
+        File.SetLastWriteTimeUtc(store.Path + ".bak", DateTime.UtcNow.AddMinutes(-10));
+        foreach (var backup in store.ListBackups())
+        {
+            File.SetLastWriteTimeUtc(backup, DateTime.UtcNow.AddMinutes(-5));
+        }
+
+        var result = store.Load();
+
+        Assert.Equal(LoadStatus.Recovered, result.Status);
+        Assert.Equal(store.Path + ".tmp", result.Detail);
+        Assert.Equal("newest", Assert.Single(result.Value!.EnumeratePhrases()).Description);
+    }
+
+    [Fact]
+    public void Missing_file_is_recovered_from_a_rolling_backup()
+    {
+        var store = LibraryStore();
+        store.Save(Build.Library(Build.Phrase("kept")));
+        Assert.True(store.CreateBackup());
+        File.Delete(store.Path);
+        File.Delete(store.Path + ".bak");
+
+        var result = store.Load();
+
+        Assert.Equal(LoadStatus.Recovered, result.Status);
+        Assert.StartsWith(store.BackupDirectory!, result.Detail, StringComparison.Ordinal);
+        Assert.Equal("kept", Assert.Single(result.Value!.EnumeratePhrases()).Description);
+    }
+
+    [Theory]
+    [InlineData("abc", 2, "ab")]
+    [InlineData("ab", 5, "ab")]
+    [InlineData("a\uD83D\uDE00", 2, "a")]
+    [InlineData("a\uD83D\uDE00b", 3, "a\uD83D\uDE00")]
+    public void Truncating_never_splits_an_emoji(string text, int length, string expected) =>
+        Assert.Equal(expected, LibrarySanitizer.Truncate(text, length));
 }

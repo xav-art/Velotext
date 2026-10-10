@@ -153,4 +153,24 @@ public sealed class RichDocumentTests
         var run = Assert.IsType<TextRun>(Assert.Single(Assert.IsType<Paragraph>(Assert.Single(result.Blocks)).Inlines));
         Assert.Equal(200_000, run.Text.Length);
     }
+
+    [Theory]
+    [InlineData("user@example.com", "mailto:user@example.com")]
+    [InlineData("first.last@mail.example.org", "mailto:first.last@mail.example.org")]
+    [InlineData("https://www.example.com@evil.example/login", null)]
+    [InlineData("http://user:pass@example.com", null)]
+    [InlineData("@example.com", null)]
+    public void Email_addresses_become_mail_links_and_web_user_names_are_refused(string input, string? expected) =>
+        Assert.Equal(expected, LinkPolicy.Normalize(input));
+
+    [Fact]
+    public void Line_breaks_inside_link_text_become_spaces()
+    {
+        var link = new Link { Url = "https://example.com", Runs = [new TextRun { Text = "Click\nhere" }] };
+
+        var result = RichDocumentNormalizer.Normalize(new RichDocument { Blocks = [new Paragraph { Inlines = [link] }] });
+
+        var normalized = Assert.IsType<Link>(Assert.Single(Assert.IsType<Paragraph>(Assert.Single(result.Blocks)).Inlines));
+        Assert.Equal("Click here", Assert.Single(normalized.Runs).Text);
+    }
 }

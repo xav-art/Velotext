@@ -21,6 +21,13 @@ public static class LinkPolicy
         }
 
         var trimmed = url.Trim();
+
+        // A bare email address means a mail link, not a web address with a user name.
+        if (LooksLikeEmail(trimmed))
+        {
+            trimmed = "mailto:" + trimmed;
+        }
+
         if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
         {
             // Only a bare address such as "example.com/page" gets https:// added; text that already
@@ -38,9 +45,10 @@ public static class LinkPolicy
             return null;
         }
 
-        // Web links need a host; "https://" + "hello world" would otherwise pass.
+        // Web links need a host; "https://" + "hello world" would otherwise pass. A user name in a web
+        // address ("https://www.example.com@other.example") hides the real site, so it is refused.
         if (uri.Scheme.StartsWith("http", StringComparison.OrdinalIgnoreCase)
-            && (string.IsNullOrEmpty(uri.Host) || trimmed.Contains(' ', StringComparison.Ordinal)))
+            && (string.IsNullOrEmpty(uri.Host) || trimmed.Contains(' ', StringComparison.Ordinal) || HasUserInfo(uri.OriginalString)))
         {
             return null;
         }
@@ -91,6 +99,31 @@ public static class LinkPolicy
 
     private static string WithoutWww(string host) =>
         host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host[4..] : host;
+
+    /// <summary>True when the part between "//" and the path holds an "@" (a user name, possibly empty).</summary>
+    private static bool HasUserInfo(string address)
+    {
+        var start = address.IndexOf("//", StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return false;
+        }
+
+        start += 2;
+        var end = address.IndexOfAny(['/', '?', '#'], start);
+        var authority = end < 0 ? address[start..] : address[start..end];
+        return authority.Contains('@', StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeEmail(string text)
+    {
+        var at = text.IndexOf('@', StringComparison.Ordinal);
+        return at > 0
+            && at == text.LastIndexOf('@')
+            && text.IndexOfAny([':', '/', ' ', '?', '#']) < 0
+            && text.IndexOf('.', at) > at + 1
+            && !text.EndsWith('.');
+    }
 
     private static bool HasScheme(string text)
     {

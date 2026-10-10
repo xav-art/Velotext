@@ -37,7 +37,7 @@ public static class RtfRenderer
 
         var plans = new List<ListPlan>();
         var placements = new Dictionary<ListBlock, (ListPlan Plan, int Level)>(ReferenceEqualityComparer.Instance);
-        PlanLists(document.Blocks, top: null, level: -1, plans, placements);
+        PlanLists(document.Blocks, level: -1, plans, placements);
 
         var rtf = new StringBuilder();
         rtf.Append(@"{\rtf1\ansi\ansicpg1252\deff0\uc1");
@@ -92,24 +92,20 @@ public static class RtfRenderer
         return escaped.ToString();
     }
 
-    private static void PlanLists(IEnumerable<Block> blocks, ListPlan? top, int level, List<ListPlan> plans, Dictionary<ListBlock, (ListPlan, int)> placements)
+    private static void PlanLists(IEnumerable<Block> blocks, int level, List<ListPlan> plans, Dictionary<ListBlock, (ListPlan, int)> placements)
     {
         foreach (var list in blocks.OfType<ListBlock>())
         {
-            var plan = top;
+            // Every list gets its own definition, so each keeps its own bullet or number style and its
+            // numbering starts at 1, also when several lists share a parent item.
             var listLevel = Math.Min(level + 1, MaxLevels - 1);
-            if (plan is null)
-            {
-                plan = new ListPlan(plans.Count + 1);
-                plans.Add(plan);
-                listLevel = 0;
-            }
-
-            plan.Kinds[listLevel] ??= list.Kind;
+            var plan = new ListPlan(plans.Count + 1);
+            plans.Add(plan);
+            plan.Kinds[listLevel] = list.Kind;
             placements[list] = (plan, listLevel);
             foreach (var item in list.Items)
             {
-                PlanLists(item.Blocks, plan, listLevel, plans, placements);
+                PlanLists(item.Blocks, listLevel, plans, placements);
             }
         }
     }

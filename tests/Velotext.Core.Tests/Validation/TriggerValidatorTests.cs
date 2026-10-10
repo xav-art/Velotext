@@ -152,4 +152,44 @@ public sealed class TriggerValidatorTests
     [InlineData(";x", null)]
     public void Short_or_letterless_triggers_are_refused(string text, string? expected) =>
         Assert.Equal(expected, TriggerValidator.DescribeUnusable(text));
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Delimiter_trigger_completed_by_the_last_character_blocks_the_longer_trigger(bool immediate)
+    {
+        var end = Build.Phrase("End", Build.Auto("end", immediate: false));
+        var endDot = Build.Phrase("End with dot", Build.Auto("end.", immediate: immediate));
+
+        var issue = Assert.Single(TriggerValidator.Validate(Build.Library(end, endDot)));
+
+        Assert.Equal(endDot.Id, issue.PhraseId);
+        Assert.Equal(IssueSeverity.Error, issue.Severity);
+        Assert.Equal("This trigger does not fire. \"end\" inserts \"End\" before you finish typing it. Change one of the 2 triggers.", issue.Message);
+    }
+
+    [Fact]
+    public void Earlier_start_of_word_trigger_only_partly_hides_a_later_one()
+    {
+        var first = Build.Phrase("First", Build.Auto("ty", wordStart: true));
+        var second = Build.Phrase("Second", Build.Auto("ty", wordStart: false));
+
+        var issue = Assert.Single(TriggerValidator.Validate(Build.Library(first, second)));
+
+        Assert.Equal(IssueSeverity.Warning, issue.Severity);
+        Assert.Equal("At the start of a word, \"ty\" inserts \"First\". Change this trigger.", issue.Message);
+    }
+
+    [Fact]
+    public void Partly_hidden_trigger_is_still_checked_for_blockers()
+    {
+        var first = Build.Phrase("First", Build.Auto("abc", caseSensitive: true));
+        var second = Build.Phrase("Second", Build.Auto("abc", caseSensitive: false));
+        var blocker = Build.Phrase("Blocker", Build.Auto("ab", caseSensitive: false));
+
+        var issues = TriggerValidator.Validate(Build.Library(first, second, blocker)).Where(i => i.PhraseId == second.Id).ToList();
+
+        Assert.Equal(2, issues.Count);
+        Assert.Contains(issues, i => i.Message.StartsWith("This trigger does not fire.", StringComparison.Ordinal));
+    }
 }

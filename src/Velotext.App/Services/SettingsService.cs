@@ -48,7 +48,7 @@ public sealed partial class SettingsService
     {
         var result = _store.Load();
         IsFirstRun = result.Status == LoadStatus.Missing;
-        if (result.Status is LoadStatus.Failed or LoadStatus.Recovered)
+        if (result.Status is LoadStatus.Failed or LoadStatus.Recovered or LoadStatus.Unavailable)
         {
             LogSettingsRecovered(_logger, result.Status);
         }

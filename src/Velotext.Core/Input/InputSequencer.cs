@@ -100,6 +100,7 @@ public sealed class InputSequencer
     private readonly List<KeyStroke> _pending = [];
     private readonly List<KeyStroke> _replayRemainder = [];
     private readonly Queue<KeyStroke> _inFlight = new();
+    // Keys are told apart by virtual key and the extended flag, so Enter and numpad Enter pair correctly.
     private readonly HashSet<int> _heldDowns = [];
     private readonly HashSet<int> _suppressedUps = [];
 
@@ -285,13 +286,17 @@ public sealed class InputSequencer
         FlushIfIdle();
     }
 
+    // Replayed keys that come back after earlier ones were held again wait behind them, so order holds.
     private bool ShouldHold(in KeyStroke key) =>
         _activeOperations.Count > 0
-        || (key.Origin == KeyOrigin.Physical && (_inFlight.Count > 0 || _pending.Count > 0));
+        || (key.Origin == KeyOrigin.Physical && (_inFlight.Count > 0 || _pending.Count > 0))
+        || (key.Origin == KeyOrigin.Replay && _replayRemainder.Count > 0);
+
+    private static int KeyId(in KeyStroke key) => key.VirtualKey | ((key.Flags & KeyStrokeAttributes.Extended) != 0 ? 0x10000 : 0);
 
     private KeyDecision Hold(in KeyStroke key)
     {
-        var vk = key.VirtualKey;
+        var vk = KeyId(key);
         if (key.IsKeyUp)
         {
             if (_heldDowns.Remove(vk))
@@ -325,7 +330,7 @@ public sealed class InputSequencer
 
     private KeyDecision Process(in KeyStroke key)
     {
-        var vk = key.VirtualKey;
+        var vk = KeyId(key);
         _heldDowns.Remove(vk);
         if (key.IsKeyUp)
         {
@@ -372,14 +377,18 @@ public sealed class InputSequencer
 
         switch (meaning.Kind)
         {
-            case KeyMeaningKind.Text when meaning.Text is { Length: > 0 } text:
-                AutotextMatch? match = null;
-                for (var i = 0; i < text.Length; i++)
+            case KeyMeaningKind.Text when meaning.Text is { Length: > 1 } several:
+                // A key that types several characters (a dead key that does not compose, a surrogate pair)
+                // never completes a trigger: the application already holds part of the text, so erasing a
+                // fixed number of characters would be wrong. The buffer still keeps up.
+                foreach (var c in several)
                 {
-                    var found = _matcher.OnCharacter(text[i]);
-                    match = i == text.Length - 1 ? found : null;
+                    _matcher.Feed(c);
                 }
 
+                return KeyDecision.Pass;
+            case KeyMeaningKind.Text when meaning.Text is { Length: 1 } text:
+                var match = _matcher.OnCharacter(text[0]);
                 if (match is null)
                 {
                     return KeyDecision.Pass;
@@ -421,6 +430,14 @@ public sealed class InputSequencer
     {
         if (!_contextLostDuringOperation)
         {
+            if (_inFlight.Count > 0 && (_pending.Count > 0 || _replayRemainder.Count > 0))
+            {
+                // Keys of an earlier replay are still coming back; the held keys follow them in order
+                // once they are back (see FlushIfIdle). Keys were typed meanwhile, so undo stays off.
+                _undo = null;
+                return;
+            }
+
             Flush(undo);
             return;
         }

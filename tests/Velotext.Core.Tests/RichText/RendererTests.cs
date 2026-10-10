@@ -155,10 +155,10 @@ public sealed class RendererTests
         Assert.Contains(@"{\b\i two}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\*\listtable{\list\listtemplateid1\listhybrid{\listlevel\levelnfc23", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\listlevel\levelnfc0\levelnfcn0\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelspace0\levelindent0{\leveltext\'02\'01.;}{\levelnumbers\'01;}\fi-360\li1440\lin1440}", rtf, StringComparison.Ordinal);
-        Assert.Contains(@"{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}}", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}{\listoverride\listid2\listoverridecount0\ls2}}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"\pard\ls1\ilvl0\fi-360\li720\sa0", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\listtext \u8226 ?\tab}", rtf, StringComparison.Ordinal);
-        Assert.Contains(@"\pard\ls1\ilvl1\fi-360\li1440", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"\pard\ls2\ilvl1\fi-360\li1440", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\listtext 1.\tab}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\field{\*\fldinst{HYPERLINK ""https://example.com/a?b=1&c=2""}}{\fldrslt{{\ul\cf1 le site}}}}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"\line ", rtf, StringComparison.Ordinal);
@@ -219,5 +219,65 @@ public sealed class RendererTests
         Assert.Throws<ArgumentNullException>(() => HtmlRenderer.ToClipboardFormat(null!));
         Assert.Throws<ArgumentNullException>(() => RtfRenderer.Render(null!));
         Assert.Throws<ArgumentNullException>(() => RichDocument.FromPlainText(null!));
+    }
+
+    [Fact]
+    public void Plain_text_shows_the_address_of_a_link_without_text_and_one_line_end_per_break()
+    {
+        var doc = new RichDocument
+        {
+            Blocks =
+            [
+                new Paragraph { Inlines = [new TextRun { Text = "a\r\nb" }, new Link { Url = "https://example.com", Runs = [new TextRun { Text = " " }] }] },
+            ],
+        };
+
+        Assert.Equal("a\r\nbhttps://example.com/", PlainTextRenderer.Render(doc));
+    }
+
+    [Fact]
+    public void Html_keeps_an_empty_line_after_a_final_line_break()
+    {
+        var html = HtmlRenderer.RenderFragment(new RichDocument { Blocks = [new Paragraph { Inlines = [new TextRun { Text = "Hi" }, LineBreak.Instance] }] });
+
+        Assert.Contains("Hi<br><![if !supportLineBreakNewLine]><br><![endif]></p>", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Rtf_gives_every_list_its_own_definition_and_numbering()
+    {
+        var doc = new RichDocument
+        {
+            Blocks =
+            [
+                new ListBlock
+                {
+                    Kind = ListKind.Bullet,
+                    Items =
+                    [
+                        new ListItem
+                        {
+                            Blocks =
+                            [
+                                Paragraph.FromText("parent"),
+                                new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("one"), ListItem.FromText("two")] },
+                                new ListBlock { Kind = ListKind.Bullet, Items = [ListItem.FromText("dot")] },
+                                new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("again one")] },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+
+        var rtf = RtfRenderer.Render(doc);
+
+        // Four lists, four definitions: the bullets stay bullets and the second numbered list starts at 1.
+        Assert.Contains(@"\ls4}", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"\pard\ls2\ilvl1", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"\pard\ls3\ilvl1", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"\pard\ls4\ilvl1", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"{\listtext 1.\tab}{again one}", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"\u8226 ?\tab}{dot}", rtf, StringComparison.Ordinal);
     }
 }
