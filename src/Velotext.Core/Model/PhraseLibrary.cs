@@ -41,8 +41,8 @@ public sealed record PhraseLibrary
                         Kind = ListKind.Bullet,
                         Items =
                         [
-                            ListItem.FromText("Formatting such as bold and lists is kept."),
-                            ListItem.FromText("Press Backspace right away to undo the insertion."),
+                            ListItem.FromText("Velotext keeps formatting such as bold and lists."),
+                            ListItem.FromText("Press Backspace right away to undo the expansion."),
                         ],
                     },
                 ],

@@ -118,4 +118,39 @@ public sealed class RichDocumentTests
     [Fact]
     public void Link_policy_rejects_overlong_addresses() =>
         Assert.Null(LinkPolicy.Normalize("https://example.com/" + new string('a', 3000)));
+
+    [Theory]
+    [InlineData("www.example.com/returns", "https://evil.example/login", true)]
+    [InlineData("example.com", "https://www.example.com/page", false)]
+    [InlineData("https://example.com", "https://example.com/a", false)]
+    [InlineData("support@example.com", "mailto:support@example.com", false)]
+    [InlineData("support@example.com", "mailto:someone@other.org", true)]
+    [InlineData("our returns page", "https://evil.example", false)]
+    [InlineData("70.20.30.40", "tel:+4570203040", false)]
+    [InlineData("v1.2", "https://example.com", false)]
+    [InlineData("www.example.com", "javascript:alert(1)", false)]
+    [InlineData("", "https://example.com", false)]
+    public void Misleading_links_are_detected(string text, string url, bool misleading) =>
+        Assert.Equal(misleading, LinkPolicy.IsMisleading(text, url));
+
+    [Theory]
+    [InlineData("https://www.example.com/a", "example.com")]
+    [InlineData("mailto:a@b.org", "b.org")]
+    [InlineData("tel:+4512345678", "tel:")]
+    [InlineData("file:///c:/x", null)]
+    public void Host_of_a_link_is_shown_without_www(string url, string? expected) =>
+        Assert.Equal(expected, LinkPolicy.HostOf(url));
+
+    [Fact]
+    public void Normalizing_many_tiny_runs_is_fast()
+    {
+        var runs = Enumerable.Range(0, 200_000).Select(_ => new TextRun { Text = "a" }).ToList<Inline>();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = RichDocumentNormalizer.Normalize(new RichDocument { Blocks = [new Paragraph { Inlines = runs }] });
+
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(2), $"Took {watch.Elapsed}.");
+        var run = Assert.IsType<TextRun>(Assert.Single(Assert.IsType<Paragraph>(Assert.Single(result.Blocks)).Inlines));
+        Assert.Equal(200_000, run.Text.Length);
+    }
 }

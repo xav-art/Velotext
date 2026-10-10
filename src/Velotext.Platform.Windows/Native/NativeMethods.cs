@@ -50,6 +50,10 @@ internal static unsafe partial class NativeMethods
 
     public const uint Th32csSnapProcess = 0x00000002;
 
+    // PeekMessage flags that handle only messages sent by other threads and leave posted messages queued.
+    public const uint QsSendMessage = 0x0040;
+    public const uint PmNoRemoveSentOnly = QsSendMessage << 16;
+
     public static readonly nint HwndMessage = -3;
 
     [LibraryImport("user32.dll", SetLastError = true)]
@@ -215,6 +219,28 @@ internal static unsafe partial class NativeMethods
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool CloseHandle(nint hObject);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial int GetClassNameW(nint hWnd, char* lpClassName, int nMaxCount);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetLastInputInfo(ref LastInputInfo plii);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PeekMessageW(out Msg lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial uint MsgWaitForMultipleObjectsEx(uint nCount, nint* pHandles, uint dwMilliseconds, uint dwWakeMask, uint dwFlags);
+}
+
+/// <summary>Time of the last input event (LASTINPUTINFO).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct LastInputInfo
+{
+    public uint Size;
+    public uint Time;
 }
 
 /// <summary>A window message (MSG).</summary>

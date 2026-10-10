@@ -14,19 +14,19 @@ public sealed class RendererTests
     {
         Blocks =
         [
-            new Paragraph { Inlines = [new TextRun { Text = "Nous pouvons " }, new TextRun { Text = "deux", Style = TextStyle.Bold | TextStyle.Italic }, new TextRun { Text = " solutions:" }] },
+            new Paragraph { Inlines = [new TextRun { Text = "We offer " }, new TextRun { Text = "two", Style = TextStyle.Bold | TextStyle.Italic }, new TextRun { Text = " options:" }] },
             new ListBlock
             {
                 Kind = ListKind.Bullet,
                 Items =
                 [
-                    ListItem.FromText("Le remboursement imm\u00e9diat"),
+                    ListItem.FromText("A caf\u00e9 voucher"),
                     new ListItem
                     {
                         Blocks =
                         [
-                            Paragraph.FromText("Le renvoi"),
-                            new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("un"), ListItem.FromText("deux")] },
+                            Paragraph.FromText("A new parcel"),
+                            new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("one"), ListItem.FromText("two")] },
                         ],
                     },
                 ],
@@ -43,11 +43,11 @@ public sealed class RendererTests
 
         var expected = string.Join(
             "\r\n",
-            "Nous pouvons deux solutions:",
-            "\u2022 Le remboursement imm\u00e9diat",
-            "\u2022 Le renvoi",
-            "  1. un",
-            "  2. deux",
+            "We offer two options:",
+            "\u2022 A caf\u00e9 voucher",
+            "\u2022 A new parcel",
+            "  1. one",
+            "  2. two",
             string.Empty,
             "Voir le site (https://example.com/a?b=1&c=2)",
             "Merci");
@@ -92,8 +92,8 @@ public sealed class RendererTests
     {
         var html = HtmlRenderer.RenderFragment(s_sample);
 
-        Assert.StartsWith("<p style=\"margin:0\">Nous pouvons <strong><em>deux</em></strong> solutions:</p>", html, StringComparison.Ordinal);
-        Assert.Contains("<ul style=\"margin-top:0;margin-bottom:0\"><li>Le remboursement imm\u00e9diat</li><li>Le renvoi<ol style=\"margin-top:0;margin-bottom:0\"><li>un</li><li>deux</li></ol></li></ul>", html, StringComparison.Ordinal);
+        Assert.StartsWith("<p style=\"margin:0\">We offer <strong><em>two</em></strong> options:</p>", html, StringComparison.Ordinal);
+        Assert.Contains("<ul style=\"margin-top:0;margin-bottom:0\"><li>A caf\u00e9 voucher</li><li>A new parcel<ol style=\"margin-top:0;margin-bottom:0\"><li>one</li><li>two</li></ol></li></ul>", html, StringComparison.Ordinal);
         Assert.Contains("<p style=\"margin:0\"><br></p>", html, StringComparison.Ordinal);
         Assert.Contains("<a href=\"https://example.com/a?b=1&amp;c=2\">le site</a><br><u><s>Merci</s></u>", html, StringComparison.Ordinal);
     }
@@ -151,8 +151,8 @@ public sealed class RendererTests
 
         Assert.StartsWith(@"{\rtf1\ansi\ansicpg1252\deff0\uc1{\fonttbl{\f0\fnil\fcharset0 Aptos;}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"\fs22 ", rtf, StringComparison.Ordinal);
-        Assert.Contains(@"imm\u233?diat", rtf, StringComparison.Ordinal);
-        Assert.Contains(@"{\b\i deux}", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"caf\u233? voucher", rtf, StringComparison.Ordinal);
+        Assert.Contains(@"{\b\i two}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\*\listtable{\list\listtemplateid1\listhybrid{\listlevel\levelnfc23", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\listlevel\levelnfc0\levelnfcn0\leveljc0\leveljcn0\levelfollow0\levelstartat1\levelspace0\levelindent0{\leveltext\'02\'01.;}{\levelnumbers\'01;}\fi-360\li1440\lin1440}", rtf, StringComparison.Ordinal);
         Assert.Contains(@"{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}}", rtf, StringComparison.Ordinal);

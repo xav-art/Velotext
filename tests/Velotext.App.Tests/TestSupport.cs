@@ -48,12 +48,25 @@ internal sealed class FakeDialogs : IDialogService
 
     public List<string> Confirmations { get; } = [];
 
+    public List<string?> ConfirmDetails { get; } = [];
+
+    public int? ChooseAnswer { get; set; }
+
+    public List<IReadOnlyList<string>> Choices { get; } = [];
+
     public List<(string Title, string Message)> Errors { get; } = [];
 
-    public bool Confirm(string title, string message, string confirmText, bool destructive)
+    public bool Confirm(string title, string message, string confirmText, bool destructive, string? details = null)
     {
         Confirmations.Add(title);
+        ConfirmDetails.Add(details);
         return ConfirmAnswer;
+    }
+
+    public int? Choose(string title, string message, IReadOnlyList<string> options, string confirmText)
+    {
+        Choices.Add(options);
+        return ChooseAnswer;
     }
 
     public void ShowError(string title, string message) => Errors.Add((title, message));

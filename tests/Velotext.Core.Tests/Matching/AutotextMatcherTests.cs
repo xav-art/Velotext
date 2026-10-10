@@ -26,12 +26,12 @@ public sealed class AutotextMatcherTests
     [Fact]
     public void Immediate_trigger_fires_on_last_character_and_deletes_one_less()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
-        var match = TypeAll(matcher, "DEUX");
+        var match = TypeAll(matcher, "TWOX");
 
         Assert.NotNull(match);
-        Assert.Equal("DEUX", match.TypedText);
+        Assert.Equal("TWOX", match.TypedText);
         Assert.Equal(3, match.CharactersToDelete);
         Assert.Null(match.Delimiter);
     }
@@ -39,29 +39,29 @@ public sealed class AutotextMatcherTests
     [Fact]
     public void Case_sensitive_trigger_ignores_other_casing()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
-        Assert.Null(TypeAll(matcher, "deux"));
-        Assert.Null(TypeAll(matcher, " Deux"));
+        Assert.Null(TypeAll(matcher, "twox"));
+        Assert.Null(TypeAll(matcher, " Twox"));
     }
 
     [Fact]
     public void Case_insensitive_trigger_matches_any_casing_and_reports_typed_text()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("deux", caseSensitive: false)) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("twox", caseSensitive: false)) };
 
-        var match = TypeAll(matcher, "DeUx");
+        var match = TypeAll(matcher, "TwOx");
 
         Assert.NotNull(match);
-        Assert.Equal("DeUx", match.TypedText);
+        Assert.Equal("TwOx", match.TypedText);
     }
 
     [Fact]
     public void Word_start_blocks_trigger_inside_a_word()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
-        Assert.Null(TypeAll(matcher, "ADEUX"));
+        Assert.Null(TypeAll(matcher, "ATWOX"));
     }
 
     [Theory]
@@ -72,17 +72,17 @@ public sealed class AutotextMatcherTests
     [InlineData(",")]
     public void Word_start_allows_trigger_after_a_delimiter(string delimiter)
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
-        Assert.NotNull(TypeAll(matcher, "abc" + delimiter + "DEUX"));
+        Assert.NotNull(TypeAll(matcher, "abc" + delimiter + "TWOX"));
     }
 
     [Fact]
     public void Word_start_off_allows_trigger_inside_a_word()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX", wordStart: false)) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX", wordStart: false)) };
 
-        Assert.NotNull(TypeAll(matcher, "ADEUX"));
+        Assert.NotNull(TypeAll(matcher, "ATWOX"));
     }
 
     [Fact]
@@ -119,10 +119,10 @@ public sealed class AutotextMatcherTests
     public void Longest_trigger_wins_when_several_end_together()
     {
         var shortTrigger = Build.Auto("UX", wordStart: false);
-        var longTrigger = Build.Auto("DEUX");
+        var longTrigger = Build.Auto("TWOX");
         var matcher = new AutotextMatcher { Index = Build.Index(shortTrigger, longTrigger) };
 
-        var match = TypeAll(matcher, "DEUX");
+        var match = TypeAll(matcher, "TWOX");
 
         Assert.Same(longTrigger, match!.Entry.Trigger);
     }
@@ -130,9 +130,9 @@ public sealed class AutotextMatcherTests
     [Fact]
     public void Backspace_removes_typed_character()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
-        Assert.Null(TypeAll(matcher, "DEUZ"));
+        Assert.Null(TypeAll(matcher, "TWOZ"));
         matcher.OnBackspace();
 
         Assert.NotNull(matcher.OnCharacter('X'));
@@ -141,16 +141,16 @@ public sealed class AutotextMatcherTests
     [Fact]
     public void Backspace_on_empty_buffer_makes_context_unknown_so_word_start_passes()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
         matcher.OnBackspace();
 
-        Assert.NotNull(TypeAll(matcher, "DEUX"));
+        Assert.NotNull(TypeAll(matcher, "TWOX"));
     }
 
     [Fact]
     public void Reset_forgets_partial_trigger()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
         TypeAll(matcher, "DE");
         matcher.Reset();
@@ -183,13 +183,13 @@ public sealed class AutotextMatcherTests
     [Fact]
     public void Buffer_overflow_keeps_matching_and_tracks_boundary()
     {
-        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("TWOX")) };
 
         TypeAll(matcher, new string('a', 500) + " ");
-        Assert.NotNull(TypeAll(matcher, "DEUX"));
+        Assert.NotNull(TypeAll(matcher, "TWOX"));
 
         TypeAll(matcher, new string('b', 300));
-        Assert.Null(TypeAll(matcher, "DEUX"));
+        Assert.Null(TypeAll(matcher, "TWOX"));
     }
 
     [Theory]
@@ -197,7 +197,7 @@ public sealed class AutotextMatcherTests
     [InlineData('a', false)]
     public void Overflow_remembers_whether_the_dropped_text_ended_with_a_delimiter(char lastDropped, bool expectFire)
     {
-        var matcher = new AutotextMatcher(capacity: 128) { Index = Build.Index(Build.Auto("DEUX")) };
+        var matcher = new AutotextMatcher(capacity: 128) { Index = Build.Index(Build.Auto("TWOX")) };
 
         // Fill the buffer so the character at position 63 is the last one dropped by the trim.
         TypeAll(matcher, new string('a', 63) + lastDropped + new string('b', 64));
@@ -209,19 +209,19 @@ public sealed class AutotextMatcherTests
             matcher.OnBackspace();
         }
 
-        Assert.Equal(expectFire, TypeAll(matcher, "DEUX") is not null);
+        Assert.Equal(expectFire, TypeAll(matcher, "TWOX") is not null);
     }
 
     [Fact]
     public void Index_can_be_swapped()
     {
         var matcher = new AutotextMatcher();
-        Assert.Null(TypeAll(matcher, "DEUX"));
+        Assert.Null(TypeAll(matcher, "TWOX"));
 
         matcher.Reset();
-        matcher.Index = Build.Index(Build.Auto("DEUX"));
+        matcher.Index = Build.Index(Build.Auto("TWOX"));
 
-        Assert.NotNull(TypeAll(matcher, "DEUX"));
+        Assert.NotNull(TypeAll(matcher, "TWOX"));
         Assert.Throws<ArgumentNullException>(() => matcher.Index = null!);
     }
 
@@ -257,5 +257,21 @@ public sealed class AutotextMatcherTests
     {
         Assert.Equal(isWord, CharClass.IsWordChar(c));
         Assert.Equal(!isWord, CharClass.IsDelimiter(c));
+    }
+
+    [Theory]
+    [InlineData('\r')]
+    [InlineData('\t')]
+    public void Enter_and_tab_complete_delimiter_triggers_then_forget_the_field(char key)
+    {
+        var matcher = new AutotextMatcher { Index = Build.Index(Build.Auto("brb", immediate: false), Build.Auto("pass")) };
+
+        Assert.NotNull(TypeAll(matcher, "brb" + key));
+        matcher.Reset();
+        Assert.Null(TypeAll(matcher, "pa" + key));
+        Assert.Equal(string.Empty, matcher.BufferText);
+
+        // The text before Enter or Tab is gone, so it cannot complete a trigger afterwards.
+        Assert.Null(TypeAll(matcher, "ss"));
     }
 }

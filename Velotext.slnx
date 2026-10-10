@@ -1,3 +1,4 @@
+<!-- Velotext: solution with the core, Windows platform and app projects and their tests. -->
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Velotext.App/Velotext.App.csproj" />
@@ -8,6 +9,7 @@
     <Project Path="tests/Velotext.App.Tests/Velotext.App.Tests.csproj" />
     <Project Path="tests/Velotext.Conventions.Tests/Velotext.Conventions.Tests.csproj" />
     <Project Path="tests/Velotext.Core.Tests/Velotext.Core.Tests.csproj" />
+    <Project Path="tests/Velotext.EndToEnd/Velotext.EndToEnd.csproj" />
     <Project Path="tests/Velotext.Platform.Windows.Tests/Velotext.Platform.Windows.Tests.csproj" />
   </Folder>
 </Solution>

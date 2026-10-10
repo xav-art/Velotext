@@ -18,7 +18,7 @@ namespace Velotext.App.ViewModels;
 /// <param name="OpenFolder">Opens a folder in File Explorer.</param>
 /// <param name="ApplyTheme">Applies a theme.</param>
 /// <param name="ReplaceLibrary">Replaces the library (restore from backup).</param>
-/// <param name="PauseHotkeyConflict">Returns true when another app owns the pause hotkey.</param>
+/// <param name="DescribePauseHotkeyProblem">Explains why a pause hotkey cannot be used, or returns <c>null</c>.</param>
 public sealed record SettingsActions(
     string ExecutablePath,
     string DataDirectory,
@@ -26,7 +26,7 @@ public sealed record SettingsActions(
     Action<string> OpenFolder,
     Action<AppTheme> ApplyTheme,
     Action<PhraseLibrary> ReplaceLibrary,
-    Func<bool> PauseHotkeyConflict);
+    Func<HotkeyGesture, string?> DescribePauseHotkeyProblem);
 
 /// <summary>State of the settings window. Each property change is saved immediately.</summary>
 public sealed partial class SettingsViewModel : ObservableObject
@@ -114,9 +114,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         : null;
 
     /// <summary>A problem with the pause hotkey, or <c>null</c>.</summary>
-    public string? PauseHotkeyProblem => PauseHotkey is { } gesture
-        ? gesture.ValidationError ?? (_actions.PauseHotkeyConflict() ? $"Another app or Windows already uses {gesture}. Choose a different hotkey." : null)
-        : null;
+    public string? PauseHotkeyProblem => PauseHotkey is { } gesture ? _actions.DescribePauseHotkeyProblem(gesture) : null;
 
     /// <summary>The data folder, shown so users and IT can find it.</summary>
     public string DataDirectory => _actions.DataDirectory;
@@ -156,10 +154,11 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
 
         var count = backup.EnumeratePhrases().Count();
+        var holds = count == 1 ? "1 phrase" : string.Create(CultureInfo.InvariantCulture, $"{count} phrases");
         if (_dialogs.Confirm(
             "Replace your phrases with this backup?",
-            string.Create(CultureInfo.InvariantCulture, $"The backup holds {count} phrases. Velotext replaces all current phrases. The current library goes into a new backup first."),
-            "Restore backup",
+            $"The backup holds {holds}. Velotext replaces all your current phrases. It saves them in a new backup first.",
+            "Replace phrases",
             destructive: true))
         {
             _actions.ReplaceLibrary(backup);
@@ -179,7 +178,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or System.Security.SecurityException or IOException)
         {
-            _dialogs.ShowError("Startup setting not changed", "Windows did not allow the change. Your organisation may manage startup apps.");
+            _dialogs.ShowError("Startup setting not changed", "Windows did not allow the change. Your organization may manage startup apps. Ask your IT contact.");
         }
 
         Save(s => s with { StartWithWindows = value });

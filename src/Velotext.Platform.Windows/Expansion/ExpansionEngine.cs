@@ -9,6 +9,7 @@ using Velotext.Core.Model;
 using Velotext.Core.RichText;
 using Velotext.Platform.Windows.Clipboard;
 using Velotext.Platform.Windows.Input;
+using Velotext.Platform.Windows.Interop;
 
 namespace Velotext.Platform.Windows.Expansion;
 
@@ -27,14 +28,22 @@ public enum ExpansionNoticeKind
     /// <summary>The target application did not confirm that it read the paste.</summary>
     PasteNotConfirmed = 1,
 
-    /// <summary>The clipboard was held by another application; the trigger text was put back.</summary>
+    /// <summary>The clipboard was held by another application; nothing was inserted.</summary>
     ClipboardBusy = 2,
+
+    /// <summary>The user clicked or changed windows before the phrase was inserted; Velotext stopped.</summary>
+    WindowChanged = 3,
+
+    /// <summary>The user clicked or changed windows during an insertion; keys typed meanwhile were not replayed.</summary>
+    KeysDiscarded = 4,
 }
 
 /// <summary>A notice for the user.</summary>
 /// <param name="Kind">What happened.</param>
-/// <param name="PhraseDescription">The phrase involved.</param>
-public sealed record ExpansionNotice(ExpansionNoticeKind Kind, string PhraseDescription);
+/// <param name="PhraseDescription">The phrase involved (empty for <see cref="ExpansionNoticeKind.KeysDiscarded"/>).</param>
+/// <param name="TriggerRestored">True when Velotext typed the user's trigger back (typed-text triggers only).</param>
+/// <param name="KeyCount">For <see cref="ExpansionNoticeKind.KeysDiscarded"/>: how many key presses were not replayed.</param>
+public sealed record ExpansionNotice(ExpansionNoticeKind Kind, string PhraseDescription, bool TriggerRestored = false, int KeyCount = 0);
 
 /// <summary>What the engine needs from the application.</summary>
 public interface IExpansionHost
@@ -46,7 +55,7 @@ public interface IExpansionHost
     /// <param name="id">Phrase id.</param>
     Phrase? FindPhrase(Guid id);
 
-    /// <summary>Called after a phrase was inserted or copied, for the "Last used" folder.</summary>
+    /// <summary>Called after a phrase was inserted or copied, for the "Recently used" folder.</summary>
     /// <param name="id">Phrase id.</param>
     void PhraseInserted(Guid id);
 
@@ -66,6 +75,8 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     private static readonly TimeSpan s_minimumHold = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan s_readerGrace = TimeSpan.FromMilliseconds(100);
     private static readonly TimeSpan s_readerCloseWait = TimeSpan.FromMilliseconds(500);
+    private static readonly TimeSpan s_lateReadWait = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan s_lateReadPoll = TimeSpan.FromMilliseconds(100);
     private static readonly int[] s_modifierKeys = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
 
     private readonly IExpansionHost _host;
@@ -78,6 +89,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _worker;
     private ISequencerHost? _monitor;
+    private Task _lateRestore = Task.CompletedTask;
+    private long _abandonedOperation;
+    private int _disposed;
 
     /// <summary>Creates the engine and starts its worker.</summary>
     /// <param name="host">Application services.</param>
@@ -102,27 +116,47 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     public void Attach(ISequencerHost monitor) => _monitor = monitor ?? throw new ArgumentNullException(nameof(monitor));
 
     /// <inheritdoc />
-    public void ExpansionRequested(ExpansionRequest request) => _work.Writer.TryWrite(new ExpandWork(request));
+    /// <remarks>Runs on the keyboard thread at the moment of the match, so the window that received the trigger is recorded exactly.</remarks>
+    public void ExpansionRequested(ExpansionRequest request) => _work.Writer.TryWrite(new ExpandWork(request, CurrentPlace()));
 
     /// <inheritdoc />
-    public void UndoRequested(UndoRequest request) => _work.Writer.TryWrite(new UndoWork(request));
+    public void UndoRequested(UndoRequest request) => _work.Writer.TryWrite(new UndoWork(request, CurrentPlace()));
 
     /// <inheritdoc />
-    public void ReplayRequested(IReadOnlyList<KeyStroke> keys) => _work.Writer.TryWrite(new ReplayWork(keys));
+    public void ReplayRequested(IReadOnlyList<KeyStroke> keys)
+    {
+        if (!_work.Writer.TryWrite(new ReplayWork(keys)))
+        {
+            // Shutting down: deliver the user's keys now rather than lose them.
+            _injector.Replay(keys);
+        }
+    }
+
+    /// <inheritdoc />
+    public void HeldKeysDiscarded(long operationId, int count)
+    {
+        // When the operation already stopped with a "phrase not inserted" notice, that notice covers it.
+        if (operationId != Interlocked.Read(ref _abandonedOperation))
+        {
+            _host.Notify(new ExpansionNotice(ExpansionNoticeKind.KeysDiscarded, string.Empty, KeyCount: count));
+        }
+    }
 
     /// <summary>Inserts a phrase because its hotkey was pressed. Ignored while paused or inside Velotext.</summary>
     /// <param name="phraseId">The phrase to insert.</param>
     public async Task InsertFromHotkeyAsync(Guid phraseId)
     {
-        if (_monitor is null || _system.Foreground().IsOwnProcess)
+        var place = CurrentPlace();
+        if (_monitor is null || place.Target.IsOwnProcess)
         {
             return;
         }
 
-        var operationId = await _monitor.InvokeAsync(sequencer => sequencer.Enabled ? sequencer.BeginOperation() : 0).ConfigureAwait(false);
+        // A hotkey press while an operation runs (for example caused by Velotext's own keystrokes) is ignored.
+        var operationId = await _monitor.InvokeAsync(sequencer => sequencer.Enabled && !sequencer.IsHolding ? sequencer.BeginOperation() : 0).ConfigureAwait(false);
         if (operationId != 0)
         {
-            _work.Writer.TryWrite(new HotkeyWork(operationId, phraseId));
+            _work.Writer.TryWrite(new HotkeyWork(operationId, phraseId, place));
         }
     }
 
@@ -141,11 +175,17 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     /// <summary>Stops the worker after the current operation.</summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _work.Writer.TryComplete();
         _stop.Cancel();
         try
         {
-            _worker.Wait(TimeSpan.FromSeconds(2));
+            // Cancelled operations and late restores give the user's clipboard back before they end.
+            Task.WaitAll([_worker, _lateRestore], TimeSpan.FromSeconds(2));
         }
         catch (AggregateException)
         {
@@ -196,9 +236,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         {
             outcome = item switch
             {
-                ExpandWork expand => await ExpandAsync(expand.Request).ConfigureAwait(false),
-                UndoWork undo => await UndoAsync(undo.Request).ConfigureAwait(false),
-                HotkeyWork hotkey => await InsertAsync(hotkey.PhraseId).ConfigureAwait(false),
+                ExpandWork expand => await ExpandAsync(expand.Request, expand.Place).ConfigureAwait(false),
+                UndoWork undo => await UndoAsync(undo.Request, undo.Place).ConfigureAwait(false),
+                HotkeyWork hotkey => await InsertAsync(hotkey.OperationId, hotkey.PhraseId, hotkey.Place).ConfigureAwait(false),
                 _ => OperationOutcome.None,
             };
         }
@@ -213,19 +253,28 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         }
     }
 
-    private async Task<OperationOutcome> ExpandAsync(ExpansionRequest request)
+    private async Task<OperationOutcome> ExpandAsync(ExpansionRequest request, Place place)
     {
         var match = request.Match;
         var phrase = _host.FindPhrase(match.Entry.PhraseId);
         if (phrase is null)
         {
             // The phrase was deleted a moment ago: deliver the held-back key as if nothing happened.
-            _injector.Resend(request.CompletingKey);
+            if (StillThere(place))
+            {
+                _injector.Resend(request.CompletingKey);
+            }
+
             return OperationOutcome.None;
         }
 
-        var target = _system.Foreground();
         await WaitForModifierReleaseAsync().ConfigureAwait(false);
+        if (!StillThere(place))
+        {
+            // Never type into a place the user left. The trigger stays as typed, without its last key.
+            return Abandon(request.OperationId, phrase);
+        }
+
         if (!_injector.SendBackspaces(match.CharactersToDelete))
         {
             _injector.Resend(request.CompletingKey);
@@ -236,12 +285,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         var payload = BuildPayload(phrase.Content, settings.Rtf);
         if (phrase.Output == OutputTarget.Clipboard)
         {
-            var copied = await _clipboard.CopyAsync(payload).ConfigureAwait(false);
-            if (!copied)
+            if (!await _clipboard.CopyAsync(payload).ConfigureAwait(false))
             {
-                PutTriggerBack(request);
-                _host.Notify(new ExpansionNotice(ExpansionNoticeKind.ClipboardBusy, phrase.Description));
-                return OperationOutcome.None;
+                return PutTriggerBack(request, place, phrase);
             }
 
             ResendDelimiter(request);
@@ -250,29 +296,39 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             return OperationOutcome.None;
         }
 
-        var result = await PasteAsync(payload, target.ProcessId, settings.PasteTimeout).ConfigureAwait(false);
+        var result = await PasteAsync(payload, place, settings.PasteTimeout).ConfigureAwait(false);
         if (result is null)
         {
-            PutTriggerBack(request);
-            _host.Notify(new ExpansionNotice(ExpansionNoticeKind.ClipboardBusy, phrase.Description));
-            return OperationOutcome.None;
+            return PutTriggerBack(request, place, phrase);
         }
 
-        ResendDelimiter(request);
+        if (result == PasteOutcome.Cancelled)
+        {
+            // The trigger is already erased, but the user left before the paste: say so.
+            return Abandon(request.OperationId, phrase);
+        }
+
+        // A delimiter (it can be Enter, which sends a chat message) follows only a confirmed paste.
+        if (result == PasteOutcome.Consumed)
+        {
+            ResendDelimiter(request);
+        }
+
         _host.PhraseInserted(phrase.Id);
         if (result == PasteOutcome.TimedOut)
         {
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.PasteNotConfirmed, phrase.Description));
         }
 
-        // Undo only when the paste is known to have happened; otherwise Ctrl+Z would undo something else.
-        var undo = settings.UndoWithBackspace && result == PasteOutcome.Consumed
-            ? new UndoTicket(phrase.Id, match.TypedText, DelimiterWasResent: match.Delimiter is not null)
+        // Undo only after a confirmed paste of an immediate trigger: after a re-sent delimiter, Ctrl+Z
+        // would undo the delimiter instead. Never in a terminal, where Ctrl+Z suspends the program.
+        var undo = settings.UndoWithBackspace && result == PasteOutcome.Consumed && match.Delimiter is null && !_system.IsTerminal(place.Target.Window)
+            ? new UndoTicket(phrase.Id, match.TypedText, DelimiterWasResent: false)
             : null;
         return new OperationOutcome(undo);
     }
 
-    private async Task<OperationOutcome> InsertAsync(Guid phraseId)
+    private async Task<OperationOutcome> InsertAsync(long operationId, Guid phraseId, Place place)
     {
         var phrase = _host.FindPhrase(phraseId);
         if (phrase is null)
@@ -280,8 +336,12 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             return OperationOutcome.None;
         }
 
-        var target = _system.Foreground();
         await WaitForModifierReleaseAsync().ConfigureAwait(false);
+        if (!StillThere(place))
+        {
+            return Abandon(operationId, phrase);
+        }
+
         var settings = _host.Settings;
         var payload = BuildPayload(phrase.Content, settings.Rtf);
         if (phrase.Output == OutputTarget.Clipboard)
@@ -296,11 +356,16 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             return OperationOutcome.None;
         }
 
-        var result = await PasteAsync(payload, target.ProcessId, settings.PasteTimeout).ConfigureAwait(false);
+        var result = await PasteAsync(payload, place, settings.PasteTimeout).ConfigureAwait(false);
         if (result is null)
         {
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.ClipboardBusy, phrase.Description));
             return OperationOutcome.None;
+        }
+
+        if (result == PasteOutcome.Cancelled)
+        {
+            return Abandon(operationId, phrase);
         }
 
         _host.PhraseInserted(phrase.Id);
@@ -309,14 +374,19 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.PasteNotConfirmed, phrase.Description));
         }
 
-        return new OperationOutcome(settings.UndoWithBackspace && result == PasteOutcome.Consumed
+        return new OperationOutcome(settings.UndoWithBackspace && result == PasteOutcome.Consumed && !_system.IsTerminal(place.Target.Window)
             ? new UndoTicket(phrase.Id, string.Empty, DelimiterWasResent: false)
             : null);
     }
 
-    private async Task<OperationOutcome> UndoAsync(UndoRequest request)
+    private async Task<OperationOutcome> UndoAsync(UndoRequest request, Place place)
     {
         await WaitForModifierReleaseAsync().ConfigureAwait(false);
+        if (!StillThere(place))
+        {
+            return OperationOutcome.None;
+        }
+
         _injector.SendChord(InputInjector.VkControl, InputInjector.VkZ);
         if (request.Ticket.TypedText.Length > 0)
         {
@@ -328,43 +398,96 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
 
     /// <summary>
     /// Pastes through the clipboard and restores the user's clipboard afterwards. Returns <c>null</c>
-    /// when the clipboard could not be opened (nothing was changed).
+    /// when the clipboard could not be opened (nothing was changed). When the target does not read in time,
+    /// the phrase stays on the clipboard until the late read, until the user leaves the target, or for 10
+    /// seconds at most, so a slow app does not paste the user's own clipboard content by mistake. The
+    /// user's clipboard comes back in every case, also when Velotext shuts down meanwhile.
     /// </summary>
-    private async Task<PasteOutcome?> PasteAsync(ClipboardPayload payload, uint targetProcessId, TimeSpan timeout)
+    private async Task<PasteOutcome?> PasteAsync(ClipboardPayload payload, Place place, TimeSpan timeout)
     {
-        var session = await _clipboard.BeginPasteAsync(payload, targetProcessId).ConfigureAwait(false);
+        var session = await _clipboard.BeginPasteAsync(payload, place.Target.ProcessId).ConfigureAwait(false);
         if (session is null)
         {
             return null;
         }
 
-        var sentAt = _time.GetTimestamp();
-        PasteOutcome outcome;
-        if (!_injector.SendChord(InputInjector.VkControl, InputInjector.VkV))
+        var restoreLater = false;
+        try
         {
-            outcome = PasteOutcome.TimedOut;
-        }
-        else
-        {
+            if (!StillThere(place))
+            {
+                return PasteOutcome.Cancelled;
+            }
+
+            var sentAt = _time.GetTimestamp();
+            if (!_injector.SendChord(InputInjector.VkControl, InputInjector.VkV))
+            {
+                return PasteOutcome.TimedOut;
+            }
+
             var consumed = session.Consumed;
             await Task.WhenAny(consumed, Task.Delay(timeout, _time)).ConfigureAwait(false);
             if (!consumed.IsCompleted)
             {
-                outcome = PasteOutcome.TimedOut;
+                restoreLater = true;
+                _lateRestore = RestoreAfterLateReadAsync(session, sentAt, place.Target);
+                return PasteOutcome.TimedOut;
             }
-            else if (session.ReplacedByOther)
+
+            if (session.ReplacedByOther)
             {
-                outcome = PasteOutcome.ReplacedByOther;
+                return PasteOutcome.ReplacedByOther;
             }
-            else
+
+            await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt).ConfigureAwait(false);
+            return PasteOutcome.Consumed;
+        }
+        finally
+        {
+            if (!restoreLater)
             {
-                outcome = PasteOutcome.Consumed;
+                await RestoreQuietlyAsync(session).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task RestoreAfterLateReadAsync(PasteSession session, long sentAt, ForegroundTarget target)
+    {
+        try
+        {
+            // The user gets their clipboard back as soon as they leave the target: they may want to paste it elsewhere.
+            var consumed = session.Consumed;
+            var start = _time.GetTimestamp();
+            while (!consumed.IsCompleted && _time.GetElapsedTime(start) < s_lateReadWait && _system.Foreground().Window == target.Window)
+            {
+                await Task.WhenAny(consumed, Task.Delay(s_lateReadPoll, _time, _stop.Token)).ConfigureAwait(false);
+            }
+
+            if (consumed.IsCompleted && !session.ReplacedByOther)
+            {
                 await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt).ConfigureAwait(false);
             }
         }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // Shutting down: restore at once.
+        }
+        finally
+        {
+            await RestoreQuietlyAsync(session).ConfigureAwait(false);
+        }
+    }
 
-        await _clipboard.RestoreAsync(session).ConfigureAwait(false);
-        return outcome;
+    private async Task RestoreQuietlyAsync(PasteSession session)
+    {
+        try
+        {
+            await _clipboard.RestoreAsync(session).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The clipboard thread is gone; it restored any pending session when it stopped.
+        }
     }
 
     /// <summary>
@@ -374,8 +497,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     /// </summary>
     private async Task WaitForReaderAsync(nint reader, long sentAt)
     {
+        // A reader that opened the clipboard without a window cannot be watched; the grace covers it.
         var closeDeadline = _time.GetTimestamp();
-        while (_system.OpenClipboardWindow() == reader && _time.GetElapsedTime(closeDeadline) < s_readerCloseWait)
+        while (reader != 0 && _system.OpenClipboardWindow() == reader && _time.GetElapsedTime(closeDeadline) < s_readerCloseWait)
         {
             await Task.Delay(10, _stop.Token).ConfigureAwait(false);
         }
@@ -409,6 +533,23 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         }
     }
 
+    /// <summary>The focused window and the context generation right now.</summary>
+    private Place CurrentPlace() => new(_system.Foreground(), _monitor?.ContextGeneration ?? 0);
+
+    /// <summary>True when the user is still where they typed the trigger: same window, and no click or window change since.</summary>
+    private bool StillThere(Place place) =>
+        place.Target.Window != 0
+        && _system.Foreground().Window == place.Target.Window
+        && (_monitor?.ContextGeneration ?? 0) == place.Generation;
+
+    private OperationOutcome Abandon(long operationId, Phrase phrase)
+    {
+        Interlocked.Exchange(ref _abandonedOperation, operationId);
+        _host.Notify(new ExpansionNotice(ExpansionNoticeKind.WindowChanged, phrase.Description));
+        return OperationOutcome.None;
+    }
+
+    /// <summary>Re-sends the delimiter that completed a delimiter trigger, with the modifiers the user held.</summary>
     private void ResendDelimiter(ExpansionRequest request)
     {
         if (request.Match.Delimiter is not null)
@@ -418,14 +559,20 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     }
 
     /// <summary>Retypes the erased trigger and delivers the held-back key, so the user's text is as typed.</summary>
-    private void PutTriggerBack(ExpansionRequest request)
+    private OperationOutcome PutTriggerBack(ExpansionRequest request, Place place, Phrase phrase)
     {
+        if (!StillThere(place))
+        {
+            return Abandon(request.OperationId, phrase);
+        }
+
         var match = request.Match;
         var erased = match.Delimiter is null ? match.TypedText[..^1] : match.TypedText;
         _injector.TypeText(erased);
         _injector.Resend(request.CompletingKey);
+        _host.Notify(new ExpansionNotice(ExpansionNoticeKind.ClipboardBusy, phrase.Description, TriggerRestored: true));
+        return OperationOutcome.None;
     }
-
     [LoggerMessage(Level = LogLevel.Error, Message = "{Operation} failed.")]
     private static partial void LogOperationFailed(ILogger logger, string operation, Exception exception);
 
@@ -434,11 +581,14 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
 
     private abstract record Work;
 
-    private sealed record ExpandWork(ExpansionRequest Request) : Work;
+    private sealed record ExpandWork(ExpansionRequest Request, Place Place) : Work;
 
-    private sealed record UndoWork(UndoRequest Request) : Work;
+    private sealed record UndoWork(UndoRequest Request, Place Place) : Work;
 
-    private sealed record HotkeyWork(long OperationId, Guid PhraseId) : Work;
+    private sealed record HotkeyWork(long OperationId, Guid PhraseId, Place Place) : Work;
+
+    /// <summary>Where the user was when the operation started: the focused window and the context generation.</summary>
+    private readonly record struct Place(ForegroundTarget Target, long Generation);
 
     private sealed record ReplayWork(IReadOnlyList<KeyStroke> Keys) : Work;
 }

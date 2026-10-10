@@ -58,11 +58,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly EditContext _context;
     private readonly Debouncer _commit;
     private readonly Dictionary<Guid, PhraseViewModel> _phrases = [];
+    private const string SaveFailedBanner = "Velotext cannot save your phrases. Check that your disk has free space and that the library file is not read-only. Velotext tries again after your next change.";
+
     private bool _dirty;
     private bool _building;
 
     /// <summary>The selected tree node.</summary>
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(DuplicateCommand), nameof(DeleteCommand), nameof(MoveUpCommand), nameof(MoveDownCommand), nameof(RenameCommand), nameof(MoveToFolderCommand), nameof(ExportCommand))]
     private TreeNodeViewModel? _selectedNode;
 
     /// <summary>The phrase shown in the editor, or <c>null</c>.</summary>
@@ -71,6 +74,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>The search box text.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(NoMatchesText))]
     private string _searchText = string.Empty;
 
     /// <summary>True when a search hides every phrase.</summary>
@@ -84,7 +88,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Whether the library is saved.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(SaveStatus))]
+    [NotifyPropertyChangedFor(nameof(SaveStatus), nameof(IsSaveFailed))]
     private SaveState _saveState;
 
     /// <summary>Number of phrases in the library.</summary>
@@ -94,12 +98,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Number of trigger problems.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ProblemCountText))]
+    [NotifyPropertyChangedFor(nameof(ProblemCountText), nameof(ProblemButtonName))]
     private int _problemCount;
 
     /// <summary>A message shown at the top of the window, or <c>null</c>.</summary>
     [ObservableProperty]
     private string? _banner;
+
+    /// <summary>True when the banner reports an error (red) rather than a warning (amber).</summary>
+    [ObservableProperty]
+    private bool _isBannerError;
 
     /// <summary>Font family of the phrase editor (the output font from settings).</summary>
     [ObservableProperty]
@@ -140,8 +148,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _editorFontSize = _settings.Current.RichTextFontSize;
         Banner = _library.LoadStatus switch
         {
-            LoadStatus.Recovered => "The phrase file was damaged. Velotext loaded your most recent backup.",
-            LoadStatus.Failed => "The phrase file was damaged and no backup was found. Velotext kept the damaged file and started a new library.",
+            LoadStatus.Recovered => "The library file was damaged. Velotext loaded your most recent backup.",
+            LoadStatus.Failed => "The library file was damaged and no backup was found. Velotext kept the damaged file and started a new library.",
             _ => null,
         };
 
@@ -155,6 +163,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Raised when the editor should focus the phrase name (after create or rename).</summary>
     public event EventHandler<PhraseViewModel>? FocusPhraseNameRequested;
+
+    /// <summary>Raised when the tree should move keyboard focus to a node (after delete, move or import).</summary>
+    public event EventHandler<TreeNodeViewModel>? FocusNodeRequested;
 
     /// <summary>Raised when the settings window should open.</summary>
     public event EventHandler? SettingsRequested;
@@ -173,14 +184,23 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>Message of the editor area when no phrase is selected.</summary>
     public string EmptyEditorMessage => IsLibraryEmpty
-        ? "Create a phrase. Then give it a trigger, for example the text DEUX, and type that trigger in any app."
-        : "Select a phrase in the list to edit it, or create a new one.";
+        ? "Click New phrase. Then type a trigger for it, for example ;thx."
+        : "To edit a phrase, select it in the list.";
+
+    /// <summary>Message shown when a search finds nothing.</summary>
+    public string NoMatchesText => $"No phrases match \"{SearchText.Trim()}\". Try other words, or press Esc to clear the search.";
+
+    /// <summary>Accessible name of the status bar problem button (it starts with the visible text).</summary>
+    public string ProblemButtonName => ProblemCountText + ", show next";
+
+    /// <summary>True when the last save did not work.</summary>
+    public bool IsSaveFailed => SaveState == SaveState.Failed;
 
     /// <summary>Status bar text for the expansion state.</summary>
     public string ExpansionStatus => IsPaused ? "Expansion paused" : "Expansion on";
 
     /// <summary>Label of the pause button.</summary>
-    public string PauseButtonText => IsPaused ? "Resume" : "Pause";
+    public string PauseButtonText => IsPaused ? "Resume expansion" : "Pause expansion";
 
     /// <summary>Status bar text for the phrase count.</summary>
     public string PhraseCountText => PhraseCount == 1 ? "1 phrase" : string.Create(CultureInfo.InvariantCulture, $"{PhraseCount} phrases");
@@ -197,7 +217,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string SaveStatus => SaveState switch
     {
         SaveState.Pending => "Saving",
-        SaveState.Failed => "Not saved. Velotext tries again after your next change.",
+        SaveState.Failed => "Not saved",
         _ => "All changes saved",
     };
 
@@ -264,7 +284,62 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         Select(node);
+        FocusNodeRequested?.Invoke(this, node);
         return true;
+    }
+
+    /// <summary>The folders a node can move into, as display paths, with <c>null</c> for the top level.</summary>
+    /// <param name="node">The node to move.</param>
+    public IReadOnlyList<(string Path, FolderViewModel? Folder)> MoveDestinations(TreeNodeViewModel node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        var result = new List<(string, FolderViewModel?)> { ("Top level of the library", null) };
+
+        void Walk(IEnumerable<TreeNodeViewModel> nodes, string prefix)
+        {
+            foreach (var folder in nodes.OfType<FolderViewModel>())
+            {
+                // A folder cannot move into itself or one of its subfolders.
+                if (ReferenceEquals(folder, node))
+                {
+                    continue;
+                }
+
+                var path = prefix + folder.DisplayName;
+                result.Add((path, folder));
+                Walk(folder.Children, path + " / ");
+            }
+        }
+
+        Walk(TreeRoots.Where(n => n is not RecentFolderViewModel), string.Empty);
+        return result;
+    }
+
+    /// <summary>Moves a node to the end of a folder, or of the top level when <paramref name="folder"/> is <c>null</c>.</summary>
+    /// <param name="node">The node to move.</param>
+    /// <param name="folder">The destination folder.</param>
+    public void MoveInto(TreeNodeViewModel node, FolderViewModel? folder)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (node.IsReadOnly || (folder is not null && !CanMove(node, folder, DropPosition.Inside)))
+        {
+            return;
+        }
+
+        CollectionOf(node).Remove(node);
+        if (folder is null)
+        {
+            TreeRoots.Add(node);
+        }
+        else
+        {
+            node.Parent = folder;
+            folder.Children.Add(node);
+            folder.IsExpanded = true;
+        }
+
+        Select(node);
+        FocusNodeRequested?.Invoke(this, node);
     }
 
     /// <summary>Returns true when <paramref name="node"/> may be dropped on <paramref name="target"/>.</summary>
@@ -314,6 +389,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void NewPhrase()
     {
+        ClearSearch();
         var now = _time.GetUtcNow();
         var defaults = _settings.Current.NewTriggerDefaults;
         var model = new Phrase
@@ -332,6 +408,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void NewFolder()
     {
+        ClearSearch();
         var folder = (FolderViewModel)CreateNode(new Folder { Id = Guid.NewGuid(), Name = "New folder" }, null);
         if (SelectedNode is FolderViewModel { IsReadOnly: false } parent)
         {
@@ -349,7 +426,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Copies the selected phrase (without its triggers, which would clash) and selects the copy.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(HasSelectedPhrase))]
     private void Duplicate()
     {
         if (SelectedPhrase() is not { } phrase)
@@ -357,6 +434,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        ClearSearch();
         var now = _time.GetUtcNow();
         var copy = (Phrase)phrase.ToModel() with
         {
@@ -374,7 +452,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>Deletes the selected phrase or folder after confirmation.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDelete))]
     private void Delete()
     {
         var node = SelectedNode is RecentEntryViewModel recent ? recent.Target : SelectedNode;
@@ -389,7 +467,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 "Delete this folder?",
                 folder.PhraseCount switch
                 {
-                    0 => $"Velotext deletes the empty folder \"{folder.DisplayName}\".",
+                    0 => $"Velotext deletes the empty folder \"{folder.DisplayName}\". You cannot undo this.",
                     1 => $"Velotext deletes \"{folder.DisplayName}\" and the 1 phrase in it. You cannot undo this.",
                     var n => string.Create(CultureInfo.InvariantCulture, $"Velotext deletes \"{folder.DisplayName}\" and the {n} phrases in it. You cannot undo this."),
                 },
@@ -413,6 +491,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (next is not null && next is not RecentFolderViewModel)
         {
             Select(next);
+            FocusNodeRequested?.Invoke(this, next);
         }
         else
         {
@@ -420,16 +499,38 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Asks for a folder and moves the selected phrase or folder into it.</summary>
+    [RelayCommand(CanExecute = nameof(CanRearrange))]
+    private void MoveToFolder()
+    {
+        if (SelectedNode is not { IsReadOnly: false } node)
+        {
+            return;
+        }
+
+        var destinations = MoveDestinations(node);
+        var choice = _dialogs.Choose(
+            node is FolderViewModel ? "Move folder to" : "Move phrase to",
+            $"Choose where to move \"{node.DisplayName}\".",
+            [.. destinations.Select(d => d.Path)],
+            "Move");
+        if (choice is { } index && index >= 0 && index < destinations.Count)
+        {
+            ClearSearch();
+            MoveInto(node, destinations[index].Folder);
+        }
+    }
+
     /// <summary>Moves the selected node up within its folder.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRearrange))]
     private void MoveUp() => Shift(-1);
 
     /// <summary>Moves the selected node down within its folder.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRearrange))]
     private void MoveDown() => Shift(+1);
 
     /// <summary>Starts renaming: inline for folders, the name field for phrases.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanRename))]
     private void Rename()
     {
         switch (SelectedNode)
@@ -475,10 +576,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (nodes.Count == 0)
         {
-            _dialogs.ShowError("The phrases were not imported", "The file holds no phrases.");
+            _dialogs.ShowError("The phrases were not imported", "The file holds no phrases. Choose another file.");
             return;
         }
 
+        // Imported triggers and hotkeys work at once, so show everything the file adds before it is added.
+        var preview = ImportPreview.Describe(nodes);
+        var message = preview.MisleadingLinks.Count > 0
+            ? "Some links in this file open a different site than their text shows. Import only files from people you trust."
+            : "Triggers and hotkeys work as soon as you import. Import only files from people you trust.";
+        if (!_dialogs.Confirm("Import these phrases?", message, "Import phrases", destructive: false, DescribeImport(preview)))
+        {
+            return;
+        }
+
+        ClearSearch();
         var model = nodes is [Folder single]
             ? single
             : new Folder { Id = Guid.NewGuid(), Name = "Imported " + Path.GetFileNameWithoutExtension(path), Children = nodes };
@@ -486,6 +598,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         TreeRoots.Add(node);
         node.IsExpanded = true;
         Select(node);
+        FocusNodeRequested?.Invoke(this, node);
+    }
+
+    /// <summary>Text for the import preview: counts, triggers, hotkeys, link sites and misleading links.</summary>
+    /// <param name="preview">What the file adds.</param>
+    internal static string DescribeImport(ImportPreview preview)
+    {
+        static string Count(int n, string one, string many) =>
+            n == 1 ? "1 " + one : string.Create(CultureInfo.InvariantCulture, $"{n} {many}");
+
+        static string List(IEnumerable<string> items)
+        {
+            const int Shown = 40;
+            var all = items.ToList();
+            var text = string.Join(", ", all.Take(Shown));
+            return all.Count > Shown ? text + string.Create(CultureInfo.InvariantCulture, $" and {all.Count - Shown} more") : text;
+        }
+
+        var lines = new List<string>
+        {
+            Count(preview.PhraseCount, "phrase", "phrases") + (preview.FolderCount > 0 ? " in " + Count(preview.FolderCount, "folder", "folders") : string.Empty) + ".",
+        };
+        if (preview.TypedTriggers.Count > 0)
+        {
+            lines.Add("Typed text triggers: " + List(preview.TypedTriggers));
+        }
+
+        if (preview.Hotkeys.Count > 0)
+        {
+            lines.Add("Hotkeys: " + List(preview.Hotkeys.Select(h => h.ToString())));
+        }
+
+        if (preview.LinkHosts.Count > 0)
+        {
+            lines.Add("Links open: " + List(preview.LinkHosts));
+        }
+
+        lines.AddRange(preview.MisleadingLinks.Select(link => $"Check this link: the text \"{link.Text}\" opens {link.Host}."));
+        return string.Join("\n\n", lines);
     }
 
     /// <summary>Exports the selected folder or phrase, or the whole library when nothing is selected.</summary>
@@ -537,6 +688,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Clears the search.</summary>
     [RelayCommand]
     private void ClearSearch() => SearchText = string.Empty;
+
+    private bool HasSelectedPhrase() => SelectedPhrase() is not null;
+
+    private bool CanDelete() => SelectedNode is RecentEntryViewModel or { IsReadOnly: false };
+
+    private bool CanRearrange() => SelectedNode is { IsReadOnly: false };
+
+    private bool CanRename() => SelectedNode is RecentEntryViewModel or { IsReadOnly: false };
 
     /// <summary>Hides the banner.</summary>
     [RelayCommand]
@@ -718,6 +877,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         for (var parent = node.Parent; parent is not null; parent = parent.Parent)
         {
             parent.IsExpanded = true;
+            parent.IsVisible = true;
         }
 
         if (SelectedNode is not null && !ReferenceEquals(SelectedNode, node))
@@ -790,7 +950,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             anyVisible |= Visit(node);
         }
 
-        Recent.IsVisible = !searching && Recent.Items.Count > 0;
+        Recent.IsVisible = !searching;
         HasNoMatches = searching && !anyVisible;
     }
 
@@ -807,7 +967,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshRecent()
     {
-        foreach (var entry in Recent.Items)
+        foreach (var entry in Recent.Items.OfType<RecentEntryViewModel>())
         {
             entry.Dispose();
         }
@@ -818,18 +978,35 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             Recent.Items.Add(new RecentEntryViewModel(_phrases[id]));
         }
 
-        Recent.IsVisible = Recent.Items.Count > 0 && PhraseSearch.Tokenize(SearchText).Length == 0;
+        if (Recent.Items.Count == 0)
+        {
+            Recent.Items.Add(new RecentHintViewModel());
+        }
+
+        Recent.IsVisible = PhraseSearch.Tokenize(SearchText).Length == 0;
     }
 
     private void OnLibraryChanged(object? sender, LibrarySnapshot snapshot) => _ui.Post(() => ApplyIssues(snapshot));
 
     private void OnIssuesChanged(object? sender, LibrarySnapshot snapshot) => _ui.Post(() => ApplyIssues(snapshot));
 
-    private void OnSaveStateChanged(object? sender, SaveState state) => _ui.Post(() => SaveState = state);
+    private void OnSaveStateChanged(object? sender, SaveState state) => _ui.Post(() =>
+    {
+        SaveState = state;
+        if (state == SaveState.Failed)
+        {
+            Banner = SaveFailedBanner;
+            IsBannerError = true;
+        }
+        else if (state == SaveState.Saved && Banner == SaveFailedBanner)
+        {
+            Banner = null;
+        }
+    });
 
     private void OnUsageChanged(object? sender, EventArgs e) => _ui.Post(RefreshRecent);
 
-    private void OnPausedChanged(object? sender, bool paused) => _ui.Post(() => IsPaused = paused);
+    private void OnPausedChanged(object? sender, bool paused) => _ui.Post(() => IsPaused = _pause.IsPaused);
 
     private void OnSettingsChanged(object? sender, Core.Settings.AppSettings settings) => _ui.Post(() =>
     {

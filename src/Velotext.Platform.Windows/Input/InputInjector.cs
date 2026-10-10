@@ -43,9 +43,9 @@ public interface IInputInjector
     /// <returns>True when every event was accepted.</returns>
     bool TypeText(string text);
 
-    /// <summary>Re-sends a key press and release as Velotext's own input.</summary>
+    /// <summary>Re-sends a key press and release as Velotext's own input, with the modifiers the user held.</summary>
     /// <param name="key">The original key.</param>
-    /// <returns>True when both events were accepted.</returns>
+    /// <returns>True when every event was accepted.</returns>
     bool Resend(in KeyStroke key);
 
     /// <summary>Re-sends held-back user keys in order, marked as replays.</summary>
@@ -54,7 +54,12 @@ public interface IInputInjector
     int Replay(IReadOnlyList<KeyStroke> keys);
 }
 
-/// <summary>Sends keyboard input with <c>SendInput</c>. Each call is one atomic batch, so user typing never interleaves.</summary>
+/// <summary>
+/// Sends keyboard input with <c>SendInput</c>. Each call is one atomic batch, so user typing never
+/// interleaves. Re-sent and replayed keys get back the Shift, Ctrl and Alt state the user typed them
+/// with: the batch presses or releases those modifiers around the key (as Velotext's own input) when
+/// the current state differs, so "?" stays "?" and Shift+Enter stays Shift+Enter.
+/// </summary>
 public sealed class InputInjector : IInputInjector
 {
     /// <summary>Virtual key: Backspace.</summary>
@@ -66,8 +71,17 @@ public sealed class InputInjector : IInputInjector
     /// <summary>Virtual key: Enter.</summary>
     public const ushort VkReturn = 0x0D;
 
+    /// <summary>Virtual key: Shift.</summary>
+    public const ushort VkShift = 0x10;
+
     /// <summary>Virtual key: Ctrl.</summary>
     public const ushort VkControl = 0x11;
+
+    /// <summary>Virtual key: Alt.</summary>
+    public const ushort VkMenu = 0x12;
+
+    /// <summary>Virtual key: packet (a Unicode character sent by software).</summary>
+    public const int VkPacket = 0xE7;
 
     /// <summary>Virtual key: V.</summary>
     public const ushort VkV = 0x56;
@@ -153,9 +167,8 @@ public sealed class InputInjector : IInputInjector
     /// <returns>True when both events were accepted.</returns>
     public bool Resend(in KeyStroke key)
     {
-        var extended = (key.Flags & KeyStrokeAttributes.Extended) != 0;
-        InputRecord[] inputs = [Raw(key.VirtualKey, key.ScanCode, up: false, extended, InputMarkers.Own), Raw(key.VirtualKey, key.ScanCode, up: true, extended, InputMarkers.Own)];
-        return Send(inputs) == inputs.Length;
+        var inputs = BuildResend(key, CurrentModifiers());
+        return Send(inputs) == inputs.Count;
     }
 
     /// <summary>Re-sends held-back user keys in order, marked as replays.</summary>
@@ -164,9 +177,110 @@ public sealed class InputInjector : IInputInjector
     public int Replay(IReadOnlyList<KeyStroke> keys)
     {
         ArgumentNullException.ThrowIfNull(keys);
-        var inputs = keys.Select(k => Raw(k.VirtualKey, k.ScanCode, k.IsKeyUp, (k.Flags & KeyStrokeAttributes.Extended) != 0, InputMarkers.Replay)).ToList();
-        return inputs.Count - (int)Send(inputs);
+        var (inputs, keyEnds) = BuildReplay(keys, CurrentModifiers());
+
+        // SendInput stops at the first refused event; count the replayed keys that did not go out.
+        var sent = (int)Send(inputs);
+        return keyEnds.Count(end => end > sent);
     }
+
+    /// <summary>The events that re-send a key press and release with the modifiers the user held.</summary>
+    /// <param name="key">The original key.</param>
+    /// <param name="current">The Shift, Ctrl and Alt state right now.</param>
+    internal static List<InputRecord> BuildResend(in KeyStroke key, KeyStrokeAttributes current)
+    {
+        var inputs = new List<InputRecord>(8);
+        var state = current;
+        AddWithModifiers(inputs, key with { Flags = key.Flags & ~KeyStrokeAttributes.KeyUp }, InputMarkers.Own, ref state);
+        AddEvent(inputs, key with { Flags = key.Flags | KeyStrokeAttributes.KeyUp }, InputMarkers.Own);
+        return inputs;
+    }
+
+    /// <summary>The events that replay held keys, and where each key's events end in the list.</summary>
+    /// <param name="keys">The held keys, in order.</param>
+    /// <param name="current">The Shift, Ctrl and Alt state right now.</param>
+    internal static (List<InputRecord> Inputs, List<int> KeyEnds) BuildReplay(IReadOnlyList<KeyStroke> keys, KeyStrokeAttributes current)
+    {
+        var inputs = new List<InputRecord>(keys.Count + 8);
+        var keyEnds = new List<int>(keys.Count);
+        var state = current;
+        foreach (var key in keys)
+        {
+            if (key.IsModifierKey)
+            {
+                state = Track(state, key);
+                AddEvent(inputs, key, InputMarkers.Replay);
+            }
+            else if (key.IsKeyUp)
+            {
+                AddEvent(inputs, key, InputMarkers.Replay);
+            }
+            else
+            {
+                AddWithModifiers(inputs, key, InputMarkers.Replay, ref state);
+            }
+
+            keyEnds.Add(inputs.Count);
+        }
+
+        return (inputs, keyEnds);
+    }
+
+    private static KeyStrokeAttributes CurrentModifiers() =>
+        (IsDown(VkShift) ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
+        | (IsDown(VkControl) ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
+        | (IsDown(VkMenu) ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
+
+    private static bool IsDown(int vk) => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0;
+
+    private static KeyStrokeAttributes Track(KeyStrokeAttributes state, in KeyStroke key)
+    {
+        var flag = key.VirtualKey switch
+        {
+            0x10 or 0xA0 or 0xA1 => KeyStrokeAttributes.Shift,
+            0x11 or 0xA2 or 0xA3 => KeyStrokeAttributes.Control,
+            0x12 or 0xA4 or 0xA5 => KeyStrokeAttributes.Alt,
+            _ => KeyStrokeAttributes.None,
+        };
+        return key.IsKeyUp ? state & ~flag : state | flag;
+    }
+
+    /// <summary>Adds a key press, pressing or releasing Shift, Ctrl and Alt around it so they match how the user typed it.</summary>
+    private static void AddWithModifiers(List<InputRecord> inputs, in KeyStroke key, nuint marker, ref KeyStrokeAttributes state)
+    {
+        var wanted = key.Modifiers;
+        var change = wanted ^ state;
+        if (key.VirtualKey == VkPacket || change == KeyStrokeAttributes.None)
+        {
+            AddEvent(inputs, key, marker);
+            return;
+        }
+
+        (KeyStrokeAttributes Flag, ushort Vk)[] modifiers = [(KeyStrokeAttributes.Shift, VkShift), (KeyStrokeAttributes.Control, VkControl), (KeyStrokeAttributes.Alt, VkMenu)];
+        foreach (var (flag, vk) in modifiers)
+        {
+            if ((change & flag) != 0)
+            {
+                inputs.Add(Key(vk, up: (wanted & flag) == 0));
+            }
+        }
+
+        AddEvent(inputs, key, marker);
+
+        // Put the modifiers back as they are now, so keys the user still holds keep working.
+        foreach (var (flag, vk) in modifiers)
+        {
+            if ((change & flag) != 0)
+            {
+                inputs.Add(Key(vk, up: (state & flag) == 0));
+            }
+        }
+    }
+
+    private static void AddEvent(List<InputRecord> inputs, in KeyStroke key, nuint marker) =>
+        inputs.Add(key.VirtualKey == VkPacket
+            ? Unicode((char)key.ScanCode, key.IsKeyUp, marker)
+            : Raw(key.VirtualKey, key.ScanCode, key.IsKeyUp, (key.Flags & KeyStrokeAttributes.Extended) != 0, marker));
 
     private static InputRecord Key(ushort vk, bool up, bool extended = false) =>
         Raw(vk, (int)NativeMethods.MapVirtualKeyExW(vk, MapVkToVsc, 0), up, extended, InputMarkers.Own);
@@ -186,7 +300,7 @@ public sealed class InputInjector : IInputInjector
         },
     };
 
-    private static InputRecord Unicode(char c, bool up) => new()
+    private static InputRecord Unicode(char c, bool up, nuint marker = InputMarkers.Own) => new()
     {
         Type = NativeMethods.InputKeyboard,
         Data = new InputUnion
@@ -195,7 +309,7 @@ public sealed class InputInjector : IInputInjector
             {
                 ScanCode = c,
                 Flags = NativeMethods.KeyeventfUnicode | (up ? NativeMethods.KeyeventfKeyUp : 0),
-                ExtraInfo = InputMarkers.Own,
+                ExtraInfo = marker,
             },
         },
     };

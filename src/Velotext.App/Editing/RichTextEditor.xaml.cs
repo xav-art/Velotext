@@ -22,6 +22,9 @@ namespace Velotext.App.Editing;
 /// </summary>
 public sealed partial class RichTextEditor : UserControl
 {
+    /// <summary>Largest RTF accepted for a formatted paste (16 million characters); larger RTF pastes as plain text.</summary>
+    internal const int MaxRtfLength = 16 * 1024 * 1024;
+
     /// <summary>The phrase being edited.</summary>
     public static readonly DependencyProperty PhraseProperty = DependencyProperty.Register(
         nameof(Phrase), typeof(PhraseViewModel), typeof(RichTextEditor), new PropertyMetadata(null, OnPhraseChanged));
@@ -50,7 +53,7 @@ public sealed partial class RichTextEditor : UserControl
     }
 
     /// <summary>Raised when the user asks for a link; the handler returns the address, empty to remove, or <c>null</c> to cancel.</summary>
-    public event Func<string?, string?>? LinkRequested;
+    public event Func<string?, string?, string?>? LinkRequested;
 
     /// <summary>The phrase being edited.</summary>
     public PhraseViewModel? Phrase
@@ -80,7 +83,8 @@ public sealed partial class RichTextEditor : UserControl
     /// <param name="data">The clipboard or drag data.</param>
     internal static RichDocument? ReadRich(IDataObject data)
     {
-        if (data.GetDataPresent(DataFormats.Rtf) && data.GetData(DataFormats.Rtf) is string rtf)
+        // Very large formatted content pastes as plain text; it is never phrase material and costs memory and time.
+        if (data.GetDataPresent(DataFormats.Rtf) && data.GetData(DataFormats.Rtf) is string { Length: <= MaxRtfLength } rtf)
         {
             var flow = new FlowDocument();
             var range = new TextRange(flow.ContentStart, flow.ContentEnd);
@@ -96,13 +100,21 @@ public sealed partial class RichTextEditor : UserControl
             }
         }
 
-        if (data.GetDataPresent(DataFormats.Html) && data.GetData(DataFormats.Html) is string html)
+        if (data.GetDataPresent(DataFormats.Html) && data.GetData(DataFormats.Html) is string { Length: <= HtmlImporter.MaxHtmlLength } html)
         {
             return HtmlImporter.Parse(HtmlImporter.ExtractFragment(html));
         }
 
         return null;
     }
+
+    /// <summary>
+    /// The text to paste when the clipboard holds no usable RTF or HTML. Returns <c>null</c> when there
+    /// is no text at all; WPF's own XAML formats are never applied, because they can load remote content.
+    /// </summary>
+    /// <param name="data">The clipboard or drag data.</param>
+    internal static string? ReadPlain(IDataObject data) =>
+        data.GetData(DataFormats.UnicodeText) as string ?? data.GetData(DataFormats.Text) as string;
 
     private static void OnPhraseChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -200,6 +212,16 @@ public sealed partial class RichTextEditor : UserControl
         var rich = ReadRich(e.DataObject);
         if (rich is null)
         {
+            if (ReadPlain(e.DataObject) is not { } text)
+            {
+                e.CancelCommand();
+                return;
+            }
+
+            var plain = new DataObject();
+            plain.SetData(DataFormats.UnicodeText, text);
+            e.DataObject = plain;
+            e.FormatToApply = DataFormats.UnicodeText;
             return;
         }
 
@@ -264,6 +286,19 @@ public sealed partial class RichTextEditor : UserControl
         Editor.Focus();
     }
 
+    private void OnIncreaseIndent(object sender, RoutedEventArgs e)
+    {
+        // Inside a list this nests the item one level deeper.
+        EditingCommands.IncreaseIndentation.Execute(null, Editor);
+        Editor.Focus();
+    }
+
+    private void OnDecreaseIndent(object sender, RoutedEventArgs e)
+    {
+        EditingCommands.DecreaseIndentation.Execute(null, Editor);
+        Editor.Focus();
+    }
+
     private void OnClearFormatting(object sender, RoutedEventArgs e)
     {
         Editor.Selection.ClearAllProperties();
@@ -274,41 +309,52 @@ public sealed partial class RichTextEditor : UserControl
     {
         var selection = Editor.Selection;
         var existing = FindHyperlink(selection.Start) ?? FindHyperlink(selection.End);
-        var url = LinkRequested?.Invoke(existing?.NavigateUri?.ToString());
-        if (url is null)
+        // Ask again, with the reason, until the address is allowed or the user cancels.
+        var url = existing?.NavigateUri?.ToString();
+        string? problem = null;
+        string? normalized;
+        while (true)
         {
-            return;
-        }
-
-        if (url.Length == 0)
-        {
-            if (existing is not null)
+            url = LinkRequested?.Invoke(url, problem);
+            if (url is null)
             {
-                RemoveHyperlink(existing);
+                Editor.Focus();
+                return;
             }
 
-            Editor.Focus();
-            return;
-        }
+            if (url.Length == 0)
+            {
+                if (existing is not null)
+                {
+                    RemoveHyperlink(existing);
+                }
 
-        var normalized = LinkPolicy.Normalize(url);
-        if (normalized is null)
-        {
-            return;
+                Editor.Focus();
+                return;
+            }
+
+            normalized = LinkPolicy.Normalize(url);
+            if (normalized is not null)
+            {
+                break;
+            }
+
+            problem = "The link was not added. Use an address that starts with https://, http://, mailto: or tel:.";
         }
 
         if (existing is not null)
         {
             existing.NavigateUri = new Uri(normalized);
+            existing.ToolTip = normalized;
         }
         else if (selection.IsEmpty)
         {
-            var link = new Hyperlink(new Run(url), selection.Start.GetInsertionPosition(LogicalDirection.Forward)) { NavigateUri = new Uri(normalized) };
+            var link = new Hyperlink(new Run(url), selection.Start.GetInsertionPosition(LogicalDirection.Forward)) { NavigateUri = new Uri(normalized), ToolTip = normalized };
             Editor.CaretPosition = link.ElementEnd.GetNextInsertionPosition(LogicalDirection.Forward) ?? link.ElementEnd;
         }
         else
         {
-            _ = new Hyperlink(selection.Start, selection.End) { NavigateUri = new Uri(normalized) };
+            _ = new Hyperlink(selection.Start, selection.End) { NavigateUri = new Uri(normalized), ToolTip = normalized };
         }
 
         Editor.Focus();

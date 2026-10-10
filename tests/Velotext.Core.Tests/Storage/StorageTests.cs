@@ -25,7 +25,7 @@ public sealed class StorageTests : IDisposable
 
     private static PhraseLibrary RichLibrary()
     {
-        var phrase = Build.Phrase("Deux solutions", Build.Auto("DEUX", caseSensitive: false, immediate: false, wordStart: false), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Shift, 0x70)) with
+        var phrase = Build.Phrase("Two options", Build.Auto("TWOX", caseSensitive: false, immediate: false, wordStart: false), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Shift, 0x70)) with
         {
             Output = OutputTarget.Clipboard,
             Content = new RichDocument
@@ -52,8 +52,9 @@ public sealed class StorageTests : IDisposable
         Assert.Equal(LoadStatus.Loaded, result.Status);
         var json = File.ReadAllText(store.Path);
         Assert.Contains("\"kind\": \"folder\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"type\": \"autotext\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"type\": \"typed\"", json, StringComparison.Ordinal);
         Assert.Contains("\"output\": \"Clipboard\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"name\": \"Two options\"", json, StringComparison.Ordinal);
         Assert.Contains("\"caseSensitive\": false", json, StringComparison.Ordinal);
 
         var original = library.EnumeratePhrases().First();
@@ -161,7 +162,7 @@ public sealed class StorageTests : IDisposable
     public void Null_where_not_allowed_is_rejected_as_damage()
     {
         var store = LibraryStore();
-        File.WriteAllText(store.Path, "{\"items\":[{\"kind\":\"phrase\",\"id\":\"" + Guid.NewGuid() + "\",\"description\":null}]}");
+        File.WriteAllText(store.Path, "{\"items\":[{\"kind\":\"phrase\",\"id\":\"" + Guid.NewGuid() + "\",\"name\":null}]}");
 
         Assert.Equal(LoadStatus.Failed, store.Load().Status);
     }
@@ -171,7 +172,7 @@ public sealed class StorageTests : IDisposable
     {
         var store = LibraryStore();
         var id = Guid.NewGuid();
-        File.WriteAllText(store.Path, "{ // my library\n \"items\": [ { \"id\": \"" + id + "\", \"description\": \"x\", \"kind\": \"phrase\", }, ], }");
+        File.WriteAllText(store.Path, "{ // my library\n \"items\": [ { \"id\": \"" + id + "\", \"name\": \"x\", \"kind\": \"phrase\", }, ], }");
 
         var result = store.Load();
 
@@ -314,7 +315,7 @@ public sealed class StorageTests : IDisposable
         var second = Assert.IsType<Phrase>(repaired.Items[1]);
         Assert.NotEqual(dupId, second.Id);
         Assert.Equal(LibrarySanitizer.MaxNameLength, second.Description.Length);
-        Assert.Equal(OutputTarget.CurrentApplication, second.Output);
+        Assert.Equal(OutputTarget.ActiveApplication, second.Output);
         Assert.Equal(2, second.Triggers.Count);
         Assert.Equal("xy", ((AutotextTrigger)second.Triggers[0]).Text);
         Assert.Equal(AutotextTrigger.MaxLength, ((AutotextTrigger)second.Triggers[1]).Text.Length);
@@ -343,6 +344,8 @@ public sealed class StorageTests : IDisposable
     [InlineData("not json at all")]
     [InlineData("{\"format\":\"something-else\",\"version\":1,\"items\":[]}")]
     [InlineData("{\"format\":\"velotext-phrases\",\"version\":99,\"items\":[]}")]
+    [InlineData("{\"format\":\"velotext-phrases\",\"version\":1,\"items\":[{\"id\":\"8a9e3c1e-1111-4a4a-9b9b-000000000001\",\"name\":\"no kind\"}]}")]
+    [InlineData("{\"format\":\"velotext-phrases\",\"version\":1,\"items\":[{\"kind\":\"robot\"}]}")]
     [InlineData("null")]
     public void Import_rejects_foreign_or_future_files(string content)
     {
@@ -392,5 +395,34 @@ public sealed class StorageTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => PhraseExchange.Export(new MemoryStream(), null!, Build.Now));
         Assert.Throws<ArgumentNullException>(() => PhraseExchange.Import(null!, Build.Now));
         Assert.Throws<ArgumentNullException>(() => LibrarySanitizer.Repair(null!, Build.Now));
+    }
+
+    [Fact]
+    public void Import_preview_lists_triggers_hotkeys_link_sites_and_misleading_links()
+    {
+        var link = new Link { Url = "https://evil.example/login", Runs = [new TextRun { Text = "www.example.com/returns" }] };
+        var honest = new Link { Url = "https://www.example.com", Runs = [new TextRun { Text = "our site" }] };
+        var phrase = Build.Phrase("Returns", Build.Auto(";ret"), Build.Auto(";ret"), Build.Auto(string.Empty), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x52)) with
+        {
+            Content = new RichDocument
+            {
+                Blocks =
+                [
+                    new Paragraph { Inlines = [link, new Link { Url = "javascript:x", Runs = [new TextRun { Text = "x" }] }] },
+                    new ListBlock { Items = [new ListItem { Blocks = [new Paragraph { Inlines = [honest] }] }] },
+                ],
+            },
+        };
+        var folder = new Folder { Id = Guid.NewGuid(), Name = "Shared", Children = [phrase, Build.Phrase("Other", Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x52))] };
+
+        var preview = ImportPreview.Describe([folder]);
+
+        Assert.Equal(2, preview.PhraseCount);
+        Assert.Equal(1, preview.FolderCount);
+        Assert.Equal([";ret"], preview.TypedTriggers);
+        Assert.Equal("Ctrl+Alt+R", Assert.Single(preview.Hotkeys).ToString());
+        Assert.Equal(["evil.example", "example.com"], preview.LinkHosts);
+        Assert.Equal(new MisleadingLink("www.example.com/returns", "evil.example"), Assert.Single(preview.MisleadingLinks));
+        Assert.Throws<ArgumentNullException>(() => ImportPreview.Describe(null!));
     }
 }

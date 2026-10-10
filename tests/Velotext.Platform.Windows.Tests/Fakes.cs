@@ -114,21 +114,39 @@ internal sealed class FakeSystem : ISystemState
 {
     public ForegroundTarget Target { get; set; } = new(100, 1234, 5678);
 
-    public HashSet<int> HeldKeys { get; } = [];
+    // The engine reads key state on its worker while tests change it.
+    public ConcurrentDictionary<int, bool> HeldKeys { get; } = new();
 
     public ForegroundTarget Foreground() => Target;
 
-    public bool IsKeyDown(int virtualKey) => HeldKeys.Contains(virtualKey);
+    public bool IsKeyDown(int virtualKey) => HeldKeys.ContainsKey(virtualKey);
 
     public nint OpenClipboardWindow() => 0;
+
+    public HashSet<nint> Terminals { get; } = [];
+
+    public bool IsTerminal(nint window) => Terminals.Contains(window);
 }
 
 /// <summary>Runs sequencer calls synchronously and records completions.</summary>
 internal sealed class FakeSequencerHost(InputSequencer sequencer) : ISequencerHost
 {
     private readonly Lock _gate = new();
+    private long _contextGeneration;
 
     public SemaphoreSlim Completed { get; } = new(0);
+
+    public long ContextGeneration => Interlocked.Read(ref _contextGeneration);
+
+    /// <summary>Simulates a click: the sequencer loses its context and running operations see the change.</summary>
+    public void Click()
+    {
+        Interlocked.Increment(ref _contextGeneration);
+        lock (_gate)
+        {
+            sequencer.OnContextLost();
+        }
+    }
 
     public void Post(Action<InputSequencer> action)
     {
@@ -184,4 +202,6 @@ internal sealed class ForwardingSink : IInputSequencerSink
     public void UndoRequested(UndoRequest request) => Target!.UndoRequested(request);
 
     public void ReplayRequested(IReadOnlyList<KeyStroke> keys) => Target!.ReplayRequested(keys);
+
+    public void HeldKeysDiscarded(long operationId, int count) => Target!.HeldKeysDiscarded(operationId, count);
 }

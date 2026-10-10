@@ -7,7 +7,7 @@ namespace Velotext.Core.Model;
 
 /// <summary>Something the user does that inserts a phrase.</summary>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
-[JsonDerivedType(typeof(AutotextTrigger), "autotext")]
+[JsonDerivedType(typeof(AutotextTrigger), "typed")]
 [JsonDerivedType(typeof(HotkeyTrigger), "hotkey")]
 public abstract record Trigger;
 

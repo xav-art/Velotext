@@ -4,6 +4,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -17,6 +18,7 @@ public sealed partial class MainWindow : Window
     private readonly MainViewModel _viewModel;
     private Point _dragStart;
     private TreeNodeViewModel? _dragCandidate;
+    private DropIndicatorAdorner? _dropIndicator;
 
     /// <summary>Creates the window.</summary>
     /// <param name="viewModel">The main view model.</param>
@@ -26,10 +28,11 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         viewModel.FocusPhraseNameRequested += OnFocusPhraseName;
-        ContentEditor.LinkRequested += current => MessageDialog.Prompt(
+        viewModel.FocusNodeRequested += OnFocusNode;
+        ContentEditor.LinkRequested += (current, problem) => MessageDialog.Prompt(
             this,
             "Link address",
-            "Enter a web address, mailto:name@example.com or tel:+4512345678. Leave the field empty to remove the link.",
+            problem ?? "Type a web address, mailto:name@example.com or tel:+4512345678. To remove the link, clear the field.",
             current,
             "Save link");
         CommandBindings.Add(new CommandBinding(ApplicationCommands.Find, (_, _) => FocusSearch()));
@@ -101,6 +104,42 @@ public sealed partial class MainWindow : Window
         });
     }
 
+    private static TreeViewItem? FindContainer(ItemsControl parent, object item)
+    {
+        if (parent.ItemContainerGenerator.ContainerFromItem(item) is TreeViewItem direct)
+        {
+            return direct;
+        }
+
+        foreach (var child in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(child) is TreeViewItem { IsExpanded: true } container
+                && FindContainer(container, item) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private void OnFocusNode(object? sender, TreeNodeViewModel node)
+    {
+        // Wait until the tree has created the containers, then put keyboard focus on the node.
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
+        {
+            if (FindContainer(Tree, node) is { } item)
+            {
+                item.BringIntoView();
+                item.Focus();
+            }
+            else
+            {
+                Tree.Focus();
+            }
+        });
+    }
+
     private void OnTreeSelectionChanged(object sender, RoutedPropertyChangedEventArgs<object> e) =>
         _viewModel.SelectedNode = e.NewValue as TreeNodeViewModel;
 
@@ -168,17 +207,28 @@ public sealed partial class MainWindow : Window
     {
         if (e.Key is Key.Enter or Key.Escape && sender is TextBox { DataContext: FolderViewModel folder })
         {
-            folder.IsRenaming = false;
-            Tree.Focus();
+            // Esc puts the old name back; Enter keeps the new one.
+            folder.EndRename(cancel: e.Key == Key.Escape);
+            OnFocusNode(this, folder);
             e.Handled = true;
         }
     }
 
     private void OnRenameBoxLostFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (sender is TextBox { DataContext: FolderViewModel folder })
+        if (sender is TextBox { DataContext: FolderViewModel { IsRenaming: true } folder })
         {
-            folder.IsRenaming = false;
+            folder.EndRename(cancel: false);
+        }
+    }
+
+    private void OnTreeRightMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        // Right-click selects the item first, so the context menu acts on what the user clicked.
+        if (FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject) is { } item)
+        {
+            item.IsSelected = true;
+            item.Focus();
         }
     }
 
@@ -227,17 +277,64 @@ public sealed partial class MainWindow : Window
     {
         var node = e.Data.GetData(typeof(TreeNodeViewModel)) as TreeNodeViewModel;
         var drop = DropTarget(e);
-        e.Effects = node is not null && drop is { } d && MainViewModel.CanMove(node, d.Target, d.Position) ? DragDropEffects.Move : DragDropEffects.None;
+        var allowed = node is not null && drop is { } d && MainViewModel.CanMove(node, d.Target, d.Position);
+        e.Effects = allowed ? DragDropEffects.Move : DragDropEffects.None;
+        if (allowed && FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject) is { } item)
+        {
+            ShowDropIndicator(item, drop!.Value.Position);
+        }
+        else
+        {
+            HideDropIndicator();
+        }
+
         e.Handled = true;
+    }
+
+    private void OnTreeDragLeave(object sender, DragEventArgs e)
+    {
+        // DragLeave also fires when the pointer moves between rows; hide only when it leaves the tree.
+        var position = e.GetPosition(Tree);
+        if (position.X < 0 || position.Y < 0 || position.X >= Tree.ActualWidth || position.Y >= Tree.ActualHeight)
+        {
+            HideDropIndicator();
+        }
     }
 
     private void OnTreeDrop(object sender, DragEventArgs e)
     {
+        HideDropIndicator();
         if (e.Data.GetData(typeof(TreeNodeViewModel)) is TreeNodeViewModel node && DropTarget(e) is { } drop)
         {
             _viewModel.Move(node, drop.Target, drop.Position);
         }
 
         e.Handled = true;
+    }
+
+    private void ShowDropIndicator(TreeViewItem item, DropPosition position)
+    {
+        var header = (FrameworkElement?)item.Template.FindName("PART_Header", item) ?? item;
+        if (_dropIndicator is { } current && ReferenceEquals(current.AdornedElement, header))
+        {
+            current.Position = position;
+            return;
+        }
+
+        HideDropIndicator();
+        if (AdornerLayer.GetAdornerLayer(header) is { } layer)
+        {
+            _dropIndicator = new DropIndicatorAdorner(header, position, TryFindResource("AccentFillColorDefaultBrush") as Brush ?? SystemColors.HighlightBrush);
+            layer.Add(_dropIndicator);
+        }
+    }
+
+    private void HideDropIndicator()
+    {
+        if (_dropIndicator is { } indicator)
+        {
+            AdornerLayer.GetAdornerLayer(indicator.AdornedElement)?.Remove(indicator);
+            _dropIndicator = null;
+        }
     }
 }

@@ -31,6 +31,14 @@
               ToolTip="Numbered list" AutomationProperties.Name="Numbered list">
         <TextBlock Text="1." FontWeight="SemiBold" />
       </Button>
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnDecreaseIndent"
+              ToolTip="Decrease list level (Ctrl+Shift+T)" AutomationProperties.Name="Decrease list level">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE290;" />
+      </Button>
+      <Button Style="{StaticResource Velotext.FormatButton}" Click="OnIncreaseIndent"
+              ToolTip="Increase list level (Ctrl+T)" AutomationProperties.Name="Increase list level">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE291;" />
+      </Button>
       <Rectangle Width="1" Margin="8,6" Fill="{DynamicResource Velotext.StrokeSubtle}" />
       <Button Style="{StaticResource Velotext.FormatButton}" Click="OnLink"
               ToolTip="Add or change a link" AutomationProperties.Name="Link">
@@ -42,7 +50,7 @@
       </Button>
     </StackPanel>
     <RichTextBox x:Name="Editor"
-                 AcceptsTab="True"
+                 AcceptsTab="False"
                  AcceptsReturn="True"
                  VerticalScrollBarVisibility="Auto"
                  Padding="8,8"

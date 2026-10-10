@@ -76,7 +76,7 @@ public sealed partial class App : Application, IDisposable
 
         _tray = new TrayService(new TrayActions(ShowMainWindow, TogglePause, ShowSettings, ExitApplication));
         _runtime = new ExpansionRuntime(_library, _settings, _usage, _tray, loggers, time);
-        _runtime.PausedChanged += (_, paused) => _tray.SetPaused(paused);
+        _runtime.PausedChanged += (_, _) => Dispatcher.BeginInvoke(() => _tray?.SetPaused(_runtime?.IsPaused ?? false));
         _runtime.Start();
 
         _autostart = new AutostartService();
@@ -91,6 +91,20 @@ public sealed partial class App : Application, IDisposable
         _mainWindow.CloseRequested += OnMainWindowClosing;
         MainWindow = _mainWindow;
 
+        // Tell the user once per failure streak when the window is hidden; the window shows its own banner.
+        var saveWarningShown = false;
+        _library.SaveStateChanged += (_, state) => Dispatcher.BeginInvoke(() =>
+        {
+            if (state == SaveState.Saved)
+            {
+                saveWarningShown = false;
+            }
+            else if (state == SaveState.Failed && !saveWarningShown && _mainWindow is { IsVisible: false })
+            {
+                saveWarningShown = true;
+                _tray?.Show("Phrases not saved", "Velotext cannot save your phrases. Open Velotext for details.", NotificationKind.Warning);
+            }
+        });
         _instance.ListenForActivation(() => Dispatcher.BeginInvoke(ShowMainWindow));
         SessionEnding += (_, _) => SaveEverything();
 
@@ -166,8 +180,8 @@ public sealed partial class App : Application, IDisposable
         LogUiError(_logger!, e.Exception);
         e.Handled = true;
         _dialogs?.ShowError(
-            "Something in Velotext did not work",
-            "Velotext keeps running and your phrases are safe. If this happens again, send the log file (Settings, Open log folder) to your IT contact.");
+            "Velotext had an internal error",
+            "Velotext still runs and your phrases are safe. If this happens again, open Settings and click Open log folder. Send the newest log file to your IT contact.");
     }
 
     private void ShowMainWindow() => _mainWindow?.ShowAndActivate();
@@ -198,7 +212,7 @@ public sealed partial class App : Application, IDisposable
                     _library!.BackupNow();
                     _mainViewModel!.ReplaceLibrary(library);
                 },
-                () => _runtime!.PauseHotkeyConflict));
+                gesture => _runtime!.DescribePauseHotkeyProblem(gesture)));
         EventHandler<bool> conflictChanged = (_, _) => Dispatcher.BeginInvoke(viewModel.RefreshPauseHotkeyProblem);
         _runtime!.PauseHotkeyConflictChanged += conflictChanged;
         _settingsWindow = new SettingsWindow(viewModel) { Owner = _mainWindow is { IsVisible: true } ? _mainWindow : null };
@@ -222,7 +236,7 @@ public sealed partial class App : Application, IDisposable
         _mainWindow?.Hide();
         if (_settings is { Current.TrayHintShown: false })
         {
-            _tray?.Show("Velotext is still running", "Your triggers keep working. Click the Velotext icon in the notification area to open it again.", NotificationKind.Info);
+            _tray?.Show("Velotext is still running", "Velotext still runs in the notification area. To open it, click the Velotext icon. If you cannot see the icon, click Show hidden icons on the taskbar.", NotificationKind.Info);
             _settings.Update(s => s with { TrayHintShown = true });
         }
     }

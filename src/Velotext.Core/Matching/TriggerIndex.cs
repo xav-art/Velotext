@@ -55,10 +55,15 @@ public sealed class TriggerIndex
         return new TriggerIndex(Group(usable, immediate: true), Group(usable, immediate: false), usable.Count);
     }
 
-    /// <summary>Returns true when the text can be used as an autotext trigger.</summary>
+    /// <summary>
+    /// Returns true when the text can be used as an autotext trigger: 2 to 64 characters, no control
+    /// characters, and at least one letter or digit, so a trigger never fires in normal typing.
+    /// </summary>
     /// <param name="text">Trigger text.</param>
     public static bool IsUsable(string? text) =>
-        !string.IsNullOrEmpty(text) && text.Length <= AutotextTrigger.MaxLength && !text.Any(char.IsControl);
+        text is { Length: >= 2 and <= AutotextTrigger.MaxLength }
+        && !text.Any(char.IsControl)
+        && text.Any(CharClass.IsWordChar);
 
     /// <summary>Returns candidate triggers whose last character matches <paramref name="lastChar"/>, longest first.</summary>
     /// <param name="lastChar">The character just before the match end.</param>

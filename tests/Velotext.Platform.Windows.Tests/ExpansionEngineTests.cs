@@ -29,7 +29,7 @@ public sealed class ExpansionEngineTests : IDisposable
 
     public ExpansionEngineTests()
     {
-        _formatted = Phrase("Formatted", new RichDocument { Blocks = [new ListBlock { Items = [ListItem.FromText("one")] }] }, Auto("DEUX"));
+        _formatted = Phrase("Formatted", new RichDocument { Blocks = [new ListBlock { Items = [ListItem.FromText("one")] }] }, Auto("TWOX"));
         _plain = Phrase("Plain", RichDocument.FromPlainText("plain text"), Auto("brb", immediate: false), new HotkeyTrigger { Gesture = new HotkeyGesture(HotkeyModifiers.Control, 0x70) });
         _toClipboard = Phrase("Copy", RichDocument.FromPlainText("copied"), Auto("CPY")) with { Output = OutputTarget.Clipboard };
         foreach (var phrase in new[] { _formatted, _plain, _toClipboard })
@@ -75,10 +75,20 @@ public sealed class ExpansionEngineTests : IDisposable
 
     private async Task WaitForCompletion() => Assert.True(await _gateway.Completed.WaitAsync(s_wait, TestContext.Current.CancellationToken));
 
+    private static async Task WaitUntil(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + s_wait;
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "The condition was not met in time.");
+            await Task.Delay(20, TestContext.Current.CancellationToken);
+        }
+    }
+
     [Fact]
     public async Task Immediate_trigger_erases_typed_part_pastes_formatted_payload_and_arms_undo()
     {
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
@@ -92,7 +102,7 @@ public sealed class ExpansionEngineTests : IDisposable
         // Backspace right away undoes: Ctrl+Z, then the trigger is typed back.
         Assert.Equal(KeyDecision.Swallow, await Key('\b', vk: 0x08));
         await WaitForCompletion();
-        Assert.Equal(["backspace x3", "chord 11+56", "chord 11+5A", "type 'DEUX'"], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "chord 11+5A", "type 'TWOX'"], _injector.Calls);
     }
 
     [Fact]
@@ -138,10 +148,10 @@ public sealed class ExpansionEngineTests : IDisposable
     public async Task Busy_clipboard_puts_the_trigger_back_as_typed()
     {
         _clipboard.Mode = FakeClipboard.Behaviour.Busy;
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
-        Assert.Equal(["backspace x3", "type 'DEU'", "resend X"], _injector.Calls);
+        Assert.Equal(["backspace x3", "type 'TWO'", "resend X"], _injector.Calls);
         Assert.Equal(ExpansionNoticeKind.ClipboardBusy, Assert.Single(_host.Notices).Kind);
         Assert.Empty(_host.Inserted);
     }
@@ -150,19 +160,23 @@ public sealed class ExpansionEngineTests : IDisposable
     public async Task Unconfirmed_paste_warns_and_does_not_arm_undo()
     {
         _clipboard.Mode = FakeClipboard.Behaviour.Ignore;
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal(ExpansionNoticeKind.PasteNotConfirmed, Assert.Single(_host.Notices).Kind);
-        Assert.Equal(1, _clipboard.Restores);
         Assert.Equal(KeyDecision.Pass, await Key('\b', vk: 0x08));
+
+        // The phrase stays on the clipboard for a late read; leaving the target gives the clipboard back.
+        Assert.Equal(0, _clipboard.Restores);
+        _system.Target = new ForegroundTarget(200, 99, 98);
+        await WaitUntil(() => _clipboard.Restores == 1);
     }
 
     [Fact]
     public async Task Replaced_clipboard_is_not_restored_by_the_engine_logic_and_undo_stays_off()
     {
         _clipboard.Mode = FakeClipboard.Behaviour.Replace;
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Empty(_host.Notices);
@@ -173,7 +187,7 @@ public sealed class ExpansionEngineTests : IDisposable
     public async Task Undo_setting_off_lets_backspace_through()
     {
         _host.Settings = _host.Settings with { UndoWithBackspace = false };
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal(KeyDecision.Pass, await Key('\b', vk: 0x08));
@@ -183,7 +197,7 @@ public sealed class ExpansionEngineTests : IDisposable
     public async Task Deleted_phrase_delivers_the_held_key()
     {
         _host.Phrases.Clear();
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal(["resend X"], _injector.Calls);
@@ -193,7 +207,7 @@ public sealed class ExpansionEngineTests : IDisposable
     public async Task Refused_backspaces_deliver_the_held_key_and_paste_nothing()
     {
         _injector.Accept = false;
-        await Type("DEUX");
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal(["backspace x3", "resend X"], _injector.Calls);
@@ -203,8 +217,8 @@ public sealed class ExpansionEngineTests : IDisposable
     [Fact]
     public async Task Held_modifiers_are_released_after_a_second()
     {
-        _system.HeldKeys.Add(0xA0);
-        await Type("DEUX");
+        _system.HeldKeys[0xA0] = true;
+        await Type("TWOX");
         await WaitForCompletion();
 
         Assert.Equal("release A0", _injector.Calls.First());
@@ -216,13 +230,13 @@ public sealed class ExpansionEngineTests : IDisposable
         _injector.RefuseReplay = 1;
         _host.Settings = _host.Settings with { PasteTimeout = TimeSpan.FromMilliseconds(500) };
         _clipboard.Mode = FakeClipboard.Behaviour.Ignore;
-        await Type("DEUX");
+        await Type("TWOX");
         await Key('a');
         await WaitForCompletion();
         await WaitForCompletion();
 
         Assert.Contains("replay 1", _injector.Calls);
-        Assert.Equal(0, _sequencer.DroppedKeyCount);
+        Assert.Equal(1, _sequencer.DroppedKeyCount);
         Assert.False(_sequencer.IsHolding);
     }
 
@@ -276,5 +290,86 @@ public sealed class ExpansionEngineTests : IDisposable
         Assert.Null(plain.Html);
         Assert.StartsWith("Version:0.9", rich.Html, StringComparison.Ordinal);
         Assert.StartsWith("{\\rtf1", rich.Rtf, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Click_before_the_backspaces_stops_without_typing_and_reports_once()
+    {
+        _system.HeldKeys[0xA0] = true;
+        await Type("TWOX");
+        await Key('a');
+        _gateway.Click();
+        _system.HeldKeys.TryRemove(0xA0, out _);
+        await WaitForCompletion();
+
+        // Nothing is typed into the place the user left; one notice covers the phrase and the dropped key.
+        Assert.DoesNotContain(_injector.Calls, call => call.StartsWith("backspace", StringComparison.Ordinal));
+        Assert.Empty(_clipboard.Pasted);
+        Assert.Equal(ExpansionNoticeKind.WindowChanged, Assert.Single(_host.Notices).Kind);
+        Assert.Equal(1, _sequencer.DiscardedKeyCount);
+    }
+
+    [Fact]
+    public async Task Window_change_before_the_backspaces_stops_the_expansion()
+    {
+        _system.HeldKeys[0xA0] = true;
+        await Type("TWOX");
+        _system.Target = new ForegroundTarget(200, 99, 98);
+        _system.HeldKeys.TryRemove(0xA0, out _);
+        await WaitForCompletion();
+
+        Assert.Empty(_clipboard.Pasted);
+        Assert.Equal(ExpansionNoticeKind.WindowChanged, Assert.Single(_host.Notices).Kind);
+    }
+
+    [Fact]
+    public async Task Click_after_the_paste_drops_the_keys_typed_meanwhile_with_a_notice()
+    {
+        await Type("TWOX");
+        await WaitUntil(() => _injector.Calls.Contains("chord 11+56"));
+        await Key('a');
+        _gateway.Click();
+        await WaitForCompletion();
+
+        var notice = Assert.Single(_host.Notices);
+        Assert.Equal(ExpansionNoticeKind.KeysDiscarded, notice.Kind);
+        Assert.Equal(1, notice.KeyCount);
+        Assert.Equal([_formatted.Id], _host.Inserted);
+        Assert.DoesNotContain(_injector.Calls, call => call.StartsWith("replay", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Unconfirmed_paste_does_not_resend_the_delimiter()
+    {
+        _clipboard.Mode = FakeClipboard.Behaviour.Ignore;
+        await Type("brb ");
+        await WaitForCompletion();
+
+        // The delimiter can be Enter, which would send a chat message with unknown content.
+        Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
+        Assert.Equal(ExpansionNoticeKind.PasteNotConfirmed, Assert.Single(_host.Notices).Kind);
+    }
+
+    [Fact]
+    public async Task Delimiter_triggers_and_terminals_do_not_arm_undo()
+    {
+        await Type("brb ");
+        await WaitForCompletion();
+        Assert.Equal(KeyDecision.Pass, await Key('\b', vk: 0x08));
+
+        _system.Terminals.Add(_system.Target.Window);
+        await Type(" TWOX");
+        await WaitForCompletion();
+        Assert.Equal(KeyDecision.Pass, await Key('\b', vk: 0x08));
+    }
+
+    [Fact]
+    public void Replays_after_shutdown_are_sent_at_once()
+    {
+        _engine.Dispose();
+
+        _engine.ReplayRequested([new KeyStroke(0x41, 'a', KeyStrokeAttributes.None, KeyOrigin.Replay)]);
+
+        Assert.Contains("replay 1", _injector.Calls);
     }
 }

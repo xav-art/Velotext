@@ -49,7 +49,7 @@ public sealed class ModelTests
     [InlineData(HotkeyModifiers.Control, 0x61, "Ctrl+Num 1", null)]
     [InlineData(HotkeyModifiers.Alt, 0xBA, "Alt+;", null)]
     [InlineData(HotkeyModifiers.Control, 0x07, "Ctrl+Key 0x07", null)]
-    [InlineData(HotkeyModifiers.Shift, 0x41, "Shift+A", "Add Ctrl, Alt or Win. Only F1 to F24 can be used on their own.")]
+    [InlineData(HotkeyModifiers.Shift, 0x41, "Shift+A", "Add Ctrl, Alt or Win. You can use F1 to F24 without them.")]
     [InlineData(HotkeyModifiers.Control, 0x11, "Ctrl+Key 0x11", "Add a key that is not Ctrl, Alt, Shift or Win.")]
     [InlineData(HotkeyModifiers.Control, 0, "Ctrl+Key 0x00", "Choose a key.")]
     public void Hotkey_gesture_formats_and_validates(HotkeyModifiers modifiers, int key, string display, string? error)
@@ -97,21 +97,21 @@ public sealed class ModelTests
         Assert.True(settings.StartWithWindows);
         Assert.True(settings.UndoWithBackspace);
         Assert.Equal(AppTheme.Dark, settings.Theme);
-        Assert.Equal(OutputTarget.CurrentApplication, new Phrase { Id = Guid.NewGuid(), Description = "d" }.Output);
+        Assert.Equal(OutputTarget.ActiveApplication, new Phrase { Id = Guid.NewGuid(), Description = "d" }.Output);
     }
 
     [Theory]
     [InlineData("reponse", true)]
-    [InlineData("REMBOURSEMENT immediat", true)]
-    [InlineData("DEUX", true)]
+    [InlineData("CAFE offert", true)]
+    [InlineData("TWOX", true)]
     [InlineData("Ctrl+Alt+1", true)]
-    [InlineData("deux absent", false)]
+    [InlineData("twox absent", false)]
     [InlineData("", true)]
     public void Search_ignores_case_and_accents_and_needs_every_word(string query, bool expected)
     {
-        var phrase = Build.Phrase("Réponse rapide", Build.Auto("DEUX"), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x31)) with
+        var phrase = Build.Phrase("Réponse rapide", Build.Auto("TWOX"), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x31)) with
         {
-            Content = RichDocument.FromPlainText("Le remboursement immédiat"),
+            Content = RichDocument.FromPlainText("Un café offert avec la commande"),
         };
 
         Assert.Equal(expected, PhraseSearch.Matches(phrase, PhraseSearch.Tokenize(query)));
@@ -142,4 +142,26 @@ public sealed class ModelTests
         var restored = new UsageTracker(snapshot);
         Assert.Equal([a], restored.MostRecent(1, _ => true));
     }
+
+    [Theory]
+    [InlineData(HotkeyModifiers.Control, 0x56, true)]
+    [InlineData(HotkeyModifiers.Control | HotkeyModifiers.Shift, 0x5A, true)]
+    [InlineData(HotkeyModifiers.Control, 0x0D, true)]
+    [InlineData(HotkeyModifiers.Shift, 0x2D, true)]
+    [InlineData(HotkeyModifiers.Alt, 0x73, true)]
+    [InlineData(HotkeyModifiers.Windows, 0x4C, true)]
+    [InlineData(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x56, false)]
+    [InlineData(HotkeyModifiers.Control | HotkeyModifiers.Shift, 0x51, false)]
+    [InlineData(HotkeyModifiers.None, 0x70, false)]
+    public void Standard_shortcuts_are_refused(HotkeyModifiers modifiers, int key, bool standard)
+    {
+        var gesture = new HotkeyGesture(modifiers, key);
+
+        Assert.Equal(standard, gesture.IsStandardShortcut);
+        Assert.Equal(standard, gesture.ValidationError is not null);
+    }
+
+    [Fact]
+    public void Standard_shortcut_message_names_the_shortcut() =>
+        Assert.Equal("Ctrl+V is a standard shortcut in most apps. Choose a different hotkey.", new HotkeyGesture(HotkeyModifiers.Control, 0x56).ValidationError);
 }

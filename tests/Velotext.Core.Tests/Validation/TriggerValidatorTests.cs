@@ -12,7 +12,7 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Clean_library_has_no_issues()
     {
-        var library = Build.Library(Build.Phrase("a", Build.Auto("DEUX")), Build.Phrase("b", Build.Auto("TROIS"), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x31)));
+        var library = Build.Library(Build.Phrase("a", Build.Auto("TWOX")), Build.Phrase("b", Build.Auto("TROIS"), Build.Hotkey(HotkeyModifiers.Control | HotkeyModifiers.Alt, 0x31)));
 
         Assert.Empty(TriggerValidator.Validate(library));
     }
@@ -31,8 +31,8 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Exact_duplicate_is_an_error_on_the_later_trigger()
     {
-        var first = Build.Phrase("First", Build.Auto("DEUX"));
-        var second = Build.Phrase("Second", Build.Auto("DEUX"));
+        var first = Build.Phrase("First", Build.Auto("TWOX"));
+        var second = Build.Phrase("Second", Build.Auto("TWOX"));
 
         var issue = Assert.Single(TriggerValidator.Validate(Build.Library(first, second)));
 
@@ -44,8 +44,8 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Case_insensitive_earlier_trigger_hides_later_completely()
     {
-        var first = Build.Phrase("First", Build.Auto("deux", caseSensitive: false));
-        var second = Build.Phrase("Second", Build.Auto("DEUX"));
+        var first = Build.Phrase("First", Build.Auto("twox", caseSensitive: false));
+        var second = Build.Phrase("Second", Build.Auto("TWOX"));
 
         Assert.Equal(IssueSeverity.Error, Assert.Single(TriggerValidator.Validate(Build.Library(first, second))).Severity);
     }
@@ -53,8 +53,8 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Case_sensitive_earlier_trigger_hides_later_insensitive_partially()
     {
-        var first = Build.Phrase("First", Build.Auto("DEUX"));
-        var second = Build.Phrase("Second", Build.Auto("deux", caseSensitive: false));
+        var first = Build.Phrase("First", Build.Auto("TWOX"));
+        var second = Build.Phrase("Second", Build.Auto("twox", caseSensitive: false));
 
         var issue = Assert.Single(TriggerValidator.Validate(Build.Library(first, second)));
 
@@ -64,7 +64,7 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Different_casing_with_both_case_sensitive_is_fine()
     {
-        var library = Build.Library(Build.Phrase("a", Build.Auto("DEUX")), Build.Phrase("b", Build.Auto("deux")));
+        var library = Build.Library(Build.Phrase("a", Build.Auto("TWOX")), Build.Phrase("b", Build.Auto("twox")));
 
         Assert.Empty(TriggerValidator.Validate(library));
     }
@@ -84,8 +84,8 @@ public sealed class TriggerValidatorTests
     [Fact]
     public void Immediate_trigger_with_same_text_blocks_delimiter_trigger()
     {
-        var immediate = Build.Phrase("Now", Build.Auto("DEUX"));
-        var delimited = Build.Phrase("Later", Build.Auto("DEUX", immediate: false));
+        var immediate = Build.Phrase("Now", Build.Auto("TWOX"));
+        var delimited = Build.Phrase("Later", Build.Auto("TWOX", immediate: false));
 
         var issue = Assert.Single(TriggerValidator.Validate(Build.Library(delimited, immediate)));
 
@@ -107,7 +107,7 @@ public sealed class TriggerValidatorTests
     public void Word_start_trigger_inside_another_trigger_does_not_block_it()
     {
         var inner = Build.Phrase("Inner", Build.Auto("UX"));
-        var outer = Build.Phrase("Outer", Build.Auto("DEUX"));
+        var outer = Build.Phrase("Outer", Build.Auto("TWOX"));
 
         Assert.Empty(TriggerValidator.Validate(Build.Library(inner, outer)));
     }
@@ -144,4 +144,12 @@ public sealed class TriggerValidatorTests
     [InlineData("ok", false)]
     public void Describe_unusable_explains_problems(string? text, bool hasProblem) =>
         Assert.Equal(hasProblem, TriggerValidator.DescribeUnusable(text) is not null);
+
+    [Theory]
+    [InlineData("e", "Use at least 2 characters, so the trigger does not fire by accident.")]
+    [InlineData(";;", "Add a letter or a digit, so the trigger does not fire in normal typing.")]
+    [InlineData("  ", "Add a letter or a digit, so the trigger does not fire in normal typing.")]
+    [InlineData(";x", null)]
+    public void Short_or_letterless_triggers_are_refused(string text, string? expected) =>
+        Assert.Equal(expected, TriggerValidator.DescribeUnusable(text));
 }

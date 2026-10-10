@@ -53,6 +53,9 @@ public abstract partial class TreeNodeViewModel : ObservableObject
     /// <summary>Text shown in the tree.</summary>
     public abstract string DisplayName { get; }
 
+    /// <summary>Name read by screen readers; it can add state that the tree shows as an icon.</summary>
+    public virtual string AccessibleName => DisplayName;
+
     /// <summary>True for nodes the user cannot move, rename or delete.</summary>
     public virtual bool IsReadOnly => false;
 
@@ -67,12 +70,14 @@ public sealed partial class FolderViewModel : TreeNodeViewModel
 
     /// <summary>The folder name.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(DisplayName))]
+    [NotifyPropertyChangedFor(nameof(DisplayName), nameof(AccessibleName))]
     private string _name;
 
     /// <summary>True while the name is being edited in the tree.</summary>
     [ObservableProperty]
     private bool _isRenaming;
+
+    private string? _nameBeforeRename;
 
     /// <summary>Creates a folder view model and its children.</summary>
     /// <param name="model">The folder.</param>
@@ -93,7 +98,23 @@ public sealed partial class FolderViewModel : TreeNodeViewModel
     public override Guid Id { get; }
 
     /// <inheritdoc />
-    public override string DisplayName => Name;
+    public override string DisplayName => string.IsNullOrWhiteSpace(Name) ? "Untitled folder" : Name;
+
+    /// <summary>Ends renaming. Cancel puts the old name back; a blank name becomes "Untitled folder".</summary>
+    /// <param name="cancel">True when the user pressed Esc.</param>
+    public void EndRename(bool cancel)
+    {
+        if (cancel && _nameBeforeRename is not null)
+        {
+            Name = _nameBeforeRename;
+        }
+        else if (string.IsNullOrWhiteSpace(Name))
+        {
+            Name = "Untitled folder";
+        }
+
+        IsRenaming = false;
+    }
 
     /// <summary>Child folders and phrases.</summary>
     public ObservableCollection<TreeNodeViewModel> Children { get; }
@@ -115,6 +136,8 @@ public sealed partial class FolderViewModel : TreeNodeViewModel
     };
 
     partial void OnNameChanged(string value) => _context.MarkDirty();
+
+    partial void OnIsRenamingChanged(bool value) => _nameBeforeRename = value ? Name : null;
 
     private void OnChildrenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
@@ -244,7 +267,7 @@ public sealed partial class PhraseViewModel : TreeNodeViewModel
 
     /// <summary>The phrase name shown in the tree.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(DisplayName))]
+    [NotifyPropertyChangedFor(nameof(DisplayName), nameof(AccessibleName))]
     private string _description;
 
     /// <summary>The formatted text.</summary>
@@ -257,7 +280,7 @@ public sealed partial class PhraseViewModel : TreeNodeViewModel
 
     /// <summary>Number of trigger problems, for the tree marker.</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(HasProblems))]
+    [NotifyPropertyChangedFor(nameof(HasProblems), nameof(AccessibleName))]
     private int _problemCount;
 
     /// <summary>True when one of the problems stops a trigger from working.</summary>
@@ -286,6 +309,9 @@ public sealed partial class PhraseViewModel : TreeNodeViewModel
 
     /// <inheritdoc />
     public override string DisplayName => string.IsNullOrWhiteSpace(Description) ? "Untitled phrase" : Description;
+
+    /// <inheritdoc />
+    public override string AccessibleName => HasProblems ? DisplayName + ", has a trigger problem" : DisplayName;
 
     /// <summary>The trigger rows.</summary>
     public ObservableCollection<TriggerViewModel> Triggers { get; }
@@ -416,11 +442,30 @@ public sealed class RecentFolderViewModel : TreeNodeViewModel
     /// <inheritdoc />
     public override bool IsReadOnly => true;
 
-    /// <summary>Shortcuts to the most recently inserted phrases, newest first.</summary>
-    public ObservableCollection<RecentEntryViewModel> Items { get; } = [];
+    /// <summary>Creates the folder, expanded so recent phrases are one click away.</summary>
+    public RecentFolderViewModel() => IsExpanded = true;
+
+    /// <summary>Shortcuts to the most recently inserted phrases, newest first, or one hint row when there are none.</summary>
+    public ObservableCollection<TreeNodeViewModel> Items { get; } = [];
 
     /// <inheritdoc />
     public override LibraryNode ToModel() => throw new NotSupportedException("The recent folder is not part of the library.");
+}
+
+/// <summary>The hint row shown in "Recently used" before the first expansion.</summary>
+public sealed class RecentHintViewModel : TreeNodeViewModel
+{
+    /// <inheritdoc />
+    public override Guid Id => Guid.Empty;
+
+    /// <inheritdoc />
+    public override string DisplayName => "Phrases that you insert appear here.";
+
+    /// <inheritdoc />
+    public override bool IsReadOnly => true;
+
+    /// <inheritdoc />
+    public override LibraryNode ToModel() => throw new NotSupportedException("The hint is not part of the library.");
 }
 
 /// <summary>A shortcut in "Recently used" to a phrase in the library.</summary>

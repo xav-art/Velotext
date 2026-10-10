@@ -13,6 +13,7 @@ param(
     [switch]$InstallSdk,
     [switch]$DesktopTests,
     [switch]$Publish,
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
     [string]$Version = '1.0.0',
     [double]$CoreCoverageMinimum = 95
 )
@@ -31,6 +32,13 @@ function Invoke-Step([string]$Name, [scriptblock]$Command) {
 if ($InstallSdk) {
     $installer = Join-Path ([System.IO.Path]::GetTempPath()) 'dotnet-install.ps1'
     Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile $installer -UseBasicParsing
+
+    # Run the installer script only when Microsoft's signature on it is valid.
+    $signature = Get-AuthenticodeSignature $installer
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|, )O=Microsoft Corporation(,|$)') {
+        throw "The .NET install script is not signed by Microsoft (status: $($signature.Status))."
+    }
+
     $sdk = (Get-Content (Join-Path $root 'global.json') -Raw | ConvertFrom-Json).sdk.version
     & $installer -Version $sdk -InstallDir (Join-Path $root '.dotnet') -NoPath
 }
@@ -62,11 +70,11 @@ try {
         $publishDir = Join-Path $root 'artifacts\publish'
         $releaseDir = Join-Path $root 'artifacts\releases'
         Invoke-Step 'Publish' {
-            dotnet publish src/Velotext.App/Velotext.App.csproj -c Release -r win-x64 --self-contained true -p:Version=$Version -p:PublishSingleFile=false -o $publishDir
+            dotnet publish src/Velotext.App/Velotext.App.csproj -c Release -r win-x64 --self-contained true -p:Version=$Version -p:PublishSingleFile=false -p:VelotextRelease=true -o $publishDir
         }
-        Invoke-Step 'Install vpk' { dotnet tool update --global vpk --version 1.2.158 }
+        Invoke-Step 'Restore tools' { dotnet tool restore }
         Invoke-Step 'Pack installer' {
-            vpk pack --packId Velotext --packVersion $Version --packDir $publishDir --mainExe Velotext.exe --packTitle Velotext --packAuthors 'Velotext contributors' --icon src/Velotext.App/Assets/velotext.ico --outputDir $releaseDir --runtime win-x64
+            dotnet vpk pack --packId Velotext --packVersion $Version --packDir $publishDir --mainExe Velotext.exe --packTitle Velotext --packAuthors 'Velotext contributors' --icon src/Velotext.App/Assets/velotext.ico --outputDir $releaseDir --runtime win-x64
         }
         Write-Host "Installer: $releaseDir" -ForegroundColor Green
     }

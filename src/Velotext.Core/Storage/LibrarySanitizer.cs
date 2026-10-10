@@ -12,7 +12,7 @@ public sealed class InvalidPhraseFileException : Exception
 {
     /// <summary>Creates the exception.</summary>
     public InvalidPhraseFileException()
-        : this("The file is not a valid Velotext phrase file.")
+        : this("Velotext cannot read this file. Choose a .velotext file that Velotext exported.")
     {
     }
 
@@ -151,7 +151,7 @@ public static class LibrarySanitizer
             Description = CleanName(phrase.Description, "Untitled phrase"),
             Content = content,
             Triggers = triggers,
-            Output = Enum.IsDefined(phrase.Output) ? phrase.Output : OutputTarget.CurrentApplication,
+            Output = Enum.IsDefined(phrase.Output) ? phrase.Output : OutputTarget.ActiveApplication,
             CreatedUtc = created,
             ModifiedUtc = phrase.ModifiedUtc == default ? created : phrase.ModifiedUtc,
         };

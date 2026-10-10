@@ -1,6 +1,8 @@
 // Velotext: cleans rich documents (merges runs, removes empty runs and control characters, caps nesting).
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
+using System.Text;
+
 namespace Velotext.Core.RichText;
 
 /// <summary>
@@ -27,7 +29,7 @@ public static class RichDocumentNormalizer
             switch (block)
             {
                 case Paragraph paragraph:
-                    result.Add(new Paragraph { Inlines = NormalizeInlines(paragraph.Inlines) });
+                    result.Add(new Paragraph { Inlines = Seal(NormalizeInlines(paragraph.Inlines)) });
                     break;
                 case ListBlock list when depth >= MaxListDepth:
                     // Too deep: keep the text, drop the extra level.
@@ -77,7 +79,7 @@ public static class RichDocumentNormalizer
                         }
                     }
 
-                    var textRuns = runs.OfType<TextRun>().ToList();
+                    var textRuns = Seal(runs).OfType<TextRun>().ToList();
                     if (textRuns.Count > 0)
                     {
                         result.Add(new Link { Url = (link.Url ?? string.Empty).Trim(), Runs = textRuns });
@@ -88,6 +90,22 @@ public static class RichDocumentNormalizer
         }
 
         return result;
+    }
+
+    /// <summary>A text run still being built while adjacent runs with the same style are merged.</summary>
+    private sealed record PendingRun(StringBuilder Text, TextStyle Style) : Inline;
+
+    private static List<Inline> Seal(List<Inline> inlines)
+    {
+        for (var i = 0; i < inlines.Count; i++)
+        {
+            if (inlines[i] is PendingRun pending)
+            {
+                inlines[i] = new TextRun { Text = pending.Text.ToString(), Style = pending.Style };
+            }
+        }
+
+        return inlines;
     }
 
     private static void AppendText(List<Inline> result, string? text, TextStyle style)
@@ -112,13 +130,14 @@ public static class RichDocumentNormalizer
             }
 
             style &= TextStyle.Bold | TextStyle.Italic | TextStyle.Underline | TextStyle.Strikethrough;
-            if (result.Count > 0 && result[^1] is TextRun previous && previous.Style == style)
+            if (result.Count > 0 && result[^1] is PendingRun previous && previous.Style == style)
             {
-                result[^1] = previous with { Text = previous.Text + clean };
+                // Appending to a builder keeps merging linear, even for files with millions of tiny runs.
+                previous.Text.Append(clean);
             }
             else
             {
-                result.Add(new TextRun { Text = clean, Style = style });
+                result.Add(new PendingRun(new StringBuilder(clean), style));
             }
         }
     }

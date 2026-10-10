@@ -52,7 +52,11 @@ public sealed class TriggerIndexTests
     [InlineData(null, false)]
     [InlineData("", false)]
     [InlineData("ok", true)]
+    [InlineData(";s", true)]
     [InlineData("tab\there", false)]
+    [InlineData("e", false)]
+    [InlineData(" ", false)]
+    [InlineData(";;", false)]
     public void Is_usable_checks_text(string? text, bool expected) => Assert.Equal(expected, TriggerIndex.IsUsable(text));
 
     [Fact]

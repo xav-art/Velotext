@@ -65,6 +65,14 @@ public sealed class AutotextMatcher
             }
         }
 
+        // Enter and Tab usually end a field or a line (a user name, a password). Forget everything typed
+        // before them, so the buffer never holds more than the current field.
+        if (c is '\r' or '\n' or '\t')
+        {
+            Reset();
+            return null;
+        }
+
         Append(c);
         _seedLength = -1;
         return FindMatch(index, immediate: true);
@@ -75,7 +83,7 @@ public sealed class AutotextMatcher
     {
         if (_length > 0)
         {
-            _length--;
+            _buffer[--_length] = '\0';
         }
         else
         {
@@ -92,6 +100,7 @@ public sealed class AutotextMatcher
     /// <summary>Forgets all typed text, for example after a click, focus change or navigation key.</summary>
     public void Reset()
     {
+        Array.Clear(_buffer, 0, _length);
         _length = 0;
         _startIsBoundary = true;
         _seedLength = -1;
@@ -122,6 +131,7 @@ public sealed class AutotextMatcher
             var newStart = _length - keep;
             _startIsBoundary = CharClass.IsDelimiter(_buffer[newStart - 1]);
             Array.Copy(_buffer, newStart, _buffer, 0, keep);
+            Array.Clear(_buffer, keep, _buffer.Length - keep);
             _length = keep;
         }
 

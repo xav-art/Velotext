@@ -12,9 +12,18 @@ namespace Velotext.App.Editing;
 /// Converts clipboard HTML to rich text, keeping only what Velotext stores: paragraphs, line breaks,
 /// bulleted and numbered lists, bold, italic, underline, strikethrough and links. Scripts, styles,
 /// images and everything else are dropped. Uses AngleSharp, a standards-compliant HTML parser.
+/// Web pages control what they put on the clipboard, so the walk is bounded: below
+/// <see cref="MaxDepth"/> levels only the text is kept, read without recursion, so deeply nested
+/// HTML can never exhaust the stack.
 /// </summary>
 public static class HtmlImporter
 {
+    /// <summary>Largest HTML accepted for a formatted paste (4 million characters); larger HTML pastes as plain text.</summary>
+    public const int MaxHtmlLength = 4 * 1024 * 1024;
+
+    /// <summary>Deepest element nesting that keeps its formatting.</summary>
+    public const int MaxDepth = 128;
+
     private const string StartMarker = "<!--StartFragment-->";
     private const string EndMarker = "<!--EndFragment-->";
 
@@ -51,7 +60,7 @@ public static class HtmlImporter
         ArgumentNullException.ThrowIfNull(html);
         var document = new HtmlParser().ParseDocument("<!DOCTYPE html><html><body>" + html + "</body></html>");
         var builder = new Builder();
-        builder.Visit(document.Body!, TextStyle.None, link: null, preformatted: false);
+        builder.Visit(document.Body!, TextStyle.None, link: null, preformatted: false, depth: 0);
         return RichDocumentNormalizer.Normalize(new RichDocument { Blocks = builder.Finish() });
     }
 
@@ -116,8 +125,14 @@ public static class HtmlImporter
             return _targets.Peek();
         }
 
-        public void Visit(INode node, TextStyle style, string? link, bool preformatted)
+        public void Visit(INode node, TextStyle style, string? link, bool preformatted, int depth)
         {
+            if (depth > MaxDepth)
+            {
+                AddText(FlatText(node), style, link, preformatted);
+                return;
+            }
+
             foreach (var child in node.ChildNodes)
             {
                 switch (child)
@@ -126,13 +141,43 @@ public static class HtmlImporter
                         AddText(text.Data, style, link, preformatted);
                         break;
                     case IElement element:
-                        VisitElement(element, style, link, preformatted);
+                        VisitElement(element, style, link, preformatted, depth + 1);
                         break;
                 }
             }
         }
 
-        private void VisitElement(IElement element, TextStyle style, string? link, bool preformatted)
+        /// <summary>All text below a node, read with an explicit stack instead of recursion.</summary>
+        private static string FlatText(INode node)
+        {
+            var builder = new StringBuilder();
+            var pending = new Stack<INode>();
+            pending.Push(node);
+            while (pending.Count > 0)
+            {
+                var current = pending.Pop();
+                if (current is IText text)
+                {
+                    builder.Append(text.Data);
+                    continue;
+                }
+
+                if (current is IElement element && !ReferenceEquals(current, node) && s_skipped.Contains(element.LocalName))
+                {
+                    continue;
+                }
+
+                var children = current.ChildNodes;
+                for (var i = children.Length - 1; i >= 0; i--)
+                {
+                    pending.Push(children[i]);
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        private void VisitElement(IElement element, TextStyle style, string? link, bool preformatted, int depth)
         {
             var tag = element.LocalName;
             if (s_skipped.Contains(tag) || (element.GetAttribute("style")?.Contains("mso-list:Ignore", StringComparison.OrdinalIgnoreCase) ?? false))
@@ -161,13 +206,13 @@ public static class HtmlImporter
                 case "A" when element.GetAttribute("href") is { Length: > 0 } href && LinkPolicy.Normalize(href) is not null:
                     link = href;
                     break;
-                case "UL" or "OL":
-                    VisitList(element, style, preformatted);
+                case "UL" or "OL" when depth <= MaxDepth:
+                    VisitList(element, style, preformatted, depth);
                     return;
                 case "LI":
                     // A list item outside a list: treat it as its own paragraph.
                     FlushParagraph();
-                    Visit(element, style, link, preformatted);
+                    Visit(element, style, link, preformatted, depth);
                     FlushParagraph();
                     return;
             }
@@ -180,15 +225,15 @@ public static class HtmlImporter
             if (s_blocks.Contains(tag))
             {
                 FlushParagraph();
-                Visit(element, style, link, preformatted || tag.Equals("pre", StringComparison.OrdinalIgnoreCase));
+                Visit(element, style, link, preformatted || tag.Equals("pre", StringComparison.OrdinalIgnoreCase), depth);
                 FlushParagraph();
                 return;
             }
 
-            Visit(element, style, link, preformatted);
+            Visit(element, style, link, preformatted, depth);
         }
 
-        private void VisitList(IElement list, TextStyle style, bool preformatted)
+        private void VisitList(IElement list, TextStyle style, bool preformatted, int depth)
         {
             FlushParagraph();
             var items = new List<ListItem>();
@@ -197,7 +242,7 @@ public static class HtmlImporter
                 if (child.LocalName.Equals("li", StringComparison.OrdinalIgnoreCase))
                 {
                     _targets.Push([]);
-                    Visit(child, style, link: null, preformatted);
+                    Visit(child, style, link: null, preformatted, depth + 1);
                     FlushParagraph();
                     items.Add(new ListItem { Blocks = _targets.Pop() });
                 }
@@ -205,7 +250,15 @@ public static class HtmlImporter
                 {
                     // A list nested directly in a list belongs to the previous item.
                     _targets.Push(items.Count > 0 ? [.. items[^1].Blocks] : []);
-                    VisitList(child, style, preformatted);
+                    if (depth + 1 <= MaxDepth)
+                    {
+                        VisitList(child, style, preformatted, depth + 1);
+                    }
+                    else
+                    {
+                        AddText(FlatText(child), style, link: null, preformatted);
+                        FlushParagraph();
+                    }
                     var blocks = _targets.Pop();
                     if (items.Count > 0)
                     {

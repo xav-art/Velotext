@@ -28,6 +28,15 @@ public enum KeyStrokeAttributes
 
     /// <summary>Extended key (for example right Ctrl, arrow keys on the main block).</summary>
     Extended = 2,
+
+    /// <summary>Shift was held when the user pressed the key.</summary>
+    Shift = 4,
+
+    /// <summary>Ctrl was held when the user pressed the key (with Alt, this is AltGr).</summary>
+    Control = 8,
+
+    /// <summary>Alt was held when the user pressed the key (with Ctrl, this is AltGr).</summary>
+    Alt = 16,
 }
 
 /// <summary>One keyboard event as seen by the low-level hook.</summary>
@@ -39,6 +48,12 @@ public readonly record struct KeyStroke(int VirtualKey, int ScanCode, KeyStrokeA
 {
     /// <summary>True for a key release.</summary>
     public bool IsKeyUp => (Flags & KeyStrokeAttributes.KeyUp) != 0;
+
+    /// <summary>True for Shift, Ctrl, Alt and Windows keys (either side).</summary>
+    public bool IsModifierKey => VirtualKey is 0x10 or 0x11 or 0x12 or (>= 0xA0 and <= 0xA5) or 0x5B or 0x5C;
+
+    /// <summary>The modifiers the user held when pressing the key (Shift, Control, Alt).</summary>
+    public KeyStrokeAttributes Modifiers => Flags & (KeyStrokeAttributes.Shift | KeyStrokeAttributes.Control | KeyStrokeAttributes.Alt);
 
     /// <summary>Returns a copy marked as replayed by Velotext.</summary>
     public KeyStroke AsReplay() => this with { Origin = KeyOrigin.Replay };

@@ -1,0 +1,20 @@
+<!-- Velotext: end-to-end test runner that types into real applications (run manually, with the user warned). -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Velotext.EndToEnd</RootNamespace>
+    <NoWarn>$(NoWarn);CA1303;CA1031;CA2007;CA1515</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Velotext.Core\Velotext.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="System.IO" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="TestPage.html" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

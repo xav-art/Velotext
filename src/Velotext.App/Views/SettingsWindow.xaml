@@ -22,6 +22,10 @@
     <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
       <Setter Property="Margin" Value="0,0,0,8" />
     </Style>
+    <Style x:Key="FieldLabel" TargetType="TextBlock">
+      <Setter Property="Margin" Value="0,0,0,4" />
+      <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+    </Style>
   </Window.Resources>
   <ScrollViewer VerticalScrollBarVisibility="Auto">
     <StackPanel Margin="28,4,28,28" MaxWidth="560">
@@ -32,25 +36,31 @@
 
       <TextBlock Style="{StaticResource Heading}" Text="Expansion" />
       <CheckBox IsChecked="{Binding UndoWithBackspace}" Content="Press Backspace right after an expansion to undo it" />
-      <TextBlock Text="Pause hotkey" Margin="0,8,0,6" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-      <editing:HotkeyBox Gesture="{Binding PauseHotkey}" Width="260" HorizontalAlignment="Left" Padding="10,6" AutomationProperties.Name="Pause hotkey" />
-      <TextBlock Style="{StaticResource Velotext.Hint}" Text="Press a key combination with Ctrl, Alt or Win. Press Backspace to clear it." Margin="0,6,0,0" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="28,0,0,8"
+                 Text="Works for triggers that expand immediately and for hotkeys. It does not work in terminal windows." />
+      <TextBlock Style="{StaticResource FieldLabel}" Text="Pause hotkey" Margin="0,8,0,4" />
+      <editing:HotkeyBox Gesture="{Binding PauseHotkey}" Width="260" HorizontalAlignment="Left" Padding="12,4" AutomationProperties.Name="Pause hotkey" />
+      <TextBlock Style="{StaticResource Velotext.Hint}" Text="Press a key combination with Ctrl, Alt or Win, or press a key from F1 to F24. To clear it, press Backspace." Margin="0,4,0,0" />
       <TextBlock Text="{Binding PauseHotkeyProblem}" Margin="0,6,0,0" Foreground="{DynamicResource Velotext.Err}" TextWrapping="Wrap"
                  Visibility="{Binding PauseHotkeyProblem, Converter={StaticResource VisibleWhenSet}}" />
 
       <TextBlock Style="{StaticResource Heading}" Text="New typed-text triggers" />
       <CheckBox IsChecked="{Binding DefaultCaseSensitive}" Content="Match case" />
       <CheckBox IsChecked="{Binding DefaultImmediate}" Content="Expand immediately" />
-      <CheckBox IsChecked="{Binding DefaultWordStart}" Content="Start of word only" />
+      <CheckBox IsChecked="{Binding DefaultWordStart}" Content="Start of word" />
       <TextBlock Style="{StaticResource Velotext.Hint}" Text="These options apply to triggers that you create from now on." />
 
       <TextBlock Style="{StaticResource Heading}" Text="Formatted text" />
       <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,0,0,10"
                  Text="Word and classic Outlook need a font for formatted phrases. Use the font of your emails. Browsers, Teams and new Outlook use their own font." />
       <StackPanel Orientation="Horizontal">
+        <TextBlock Style="{StaticResource FieldLabel}" Text="Font" Width="272" />
+        <TextBlock Style="{StaticResource FieldLabel}" Text="Size" />
+      </StackPanel>
+      <StackPanel Orientation="Horizontal">
         <ComboBox Width="260" IsEditable="True" ItemsSource="{Binding FontNames}" Text="{Binding FontName, UpdateSourceTrigger=LostFocus}"
                   AutomationProperties.Name="Font" Margin="0,0,12,0" />
-        <ComboBox Width="90" IsEditable="True" Text="{Binding FontSize, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Font size">
+        <ComboBox Width="90" IsEditable="True" Text="{Binding FontSize, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Size">
           <ComboBoxItem Content="9" />
           <ComboBoxItem Content="10" />
           <ComboBoxItem Content="10.5" />
@@ -61,6 +71,7 @@
       </StackPanel>
 
       <TextBlock Style="{StaticResource Heading}" Text="Appearance" />
+      <TextBlock Style="{StaticResource FieldLabel}" Text="Theme" />
       <ComboBox Width="260" HorizontalAlignment="Left" SelectedIndex="{Binding ThemeIndex}" AutomationProperties.Name="Theme">
         <ComboBoxItem Content="Dark" />
         <ComboBoxItem Content="Light" />
@@ -68,11 +79,14 @@
       </ComboBox>
 
       <TextBlock Style="{StaticResource Heading}" Text="Advanced" />
-      <TextBlock Text="Paste wait time (seconds)" Margin="0,0,0,6" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-      <Slider Minimum="0.3" Maximum="10" TickFrequency="0.1" IsSnapToTickEnabled="True" Value="{Binding PasteTimeoutSeconds}" Width="260" HorizontalAlignment="Left"
-              AutomationProperties.Name="Paste wait time in seconds" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="1" />
-      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,6,0,0"
-                 Text="Velotext puts your clipboard back as soon as the app has read the phrase. This is the longest it waits when the app does not confirm. Increase it only when phrases arrive incomplete in a slow app." />
+      <TextBlock Style="{StaticResource FieldLabel}" Text="Paste wait time" />
+      <StackPanel Orientation="Horizontal">
+        <Slider Minimum="0.3" Maximum="10" TickFrequency="0.1" IsSnapToTickEnabled="True" Value="{Binding PasteTimeoutSeconds}" Width="260" VerticalAlignment="Center"
+                AutomationProperties.Name="Paste wait time in seconds" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="1" />
+        <TextBlock Text="{Binding PasteTimeoutSeconds, StringFormat={}{0:0.0} seconds}" Margin="12,0,0,0" VerticalAlignment="Center" />
+      </StackPanel>
+      <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,4,0,0"
+                 Text="Velotext puts your clipboard back as soon as the app has read the phrase. If the app does not confirm within this time, Velotext shows a notice and keeps the phrase on the clipboard for up to 10 seconds. Increase it only when phrases arrive incomplete in a slow app." />
 
       <TextBlock Style="{StaticResource Heading}" Text="Data" />
       <TextBlock Text="{Binding DataDirectory}" TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
@@ -85,7 +99,7 @@
       <TextBlock Style="{StaticResource Heading}" Text="About" />
       <TextBlock Text="{Binding Version}" />
       <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,6,0,0"
-                 Text="Velotext is free software under the MIT License. It keeps only the last few typed characters in memory to find triggers. It never saves or sends what you type." />
+                 Text="Velotext is free software under the MIT License. To find triggers, it keeps the characters that you typed since the last Enter, Tab or click in memory (128 at most). It never saves or sends what you type." />
     </StackPanel>
   </ScrollViewer>
 </Window>

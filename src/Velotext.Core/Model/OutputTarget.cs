@@ -7,7 +7,7 @@ namespace Velotext.Core.Model;
 public enum OutputTarget
 {
     /// <summary>Insert the phrase at the caret of the application that has focus (default).</summary>
-    CurrentApplication = 0,
+    ActiveApplication = 0,
 
     /// <summary>Copy the phrase to the clipboard without inserting it.</summary>
     Clipboard = 1,

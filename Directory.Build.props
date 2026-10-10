@@ -17,5 +17,14 @@
     <Copyright>Copyright (c) 2026 Velotext contributors</Copyright>
     <VersionPrefix>1.0.0</VersionPrefix>
     <NeutralLanguage>en</NeutralLanguage>
+    <!-- Lock files pin every package, direct and transitive, by content hash. CI restores in locked mode. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
+    <!-- The installer is built for win-x64 and publish passes that runtime to every referenced project, so the lock files list it. -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+  </PropertyGroup>
+  <!-- CI and release builds embed no local file paths (PDB paths become /_/). -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true' Or '$(VelotextRelease)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 </Project>

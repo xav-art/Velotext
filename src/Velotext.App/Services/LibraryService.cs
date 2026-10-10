@@ -2,7 +2,6 @@
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using System.Collections.Frozen;
-using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Velotext.Core.Model;
 using Velotext.Core.Storage;
@@ -15,6 +14,11 @@ namespace Velotext.App.Services;
 /// <param name="Phrases">Phrases by id.</param>
 /// <param name="Issues">Trigger problems, including hotkeys taken by other applications.</param>
 public sealed record LibrarySnapshot(PhraseLibrary Library, IReadOnlyDictionary<Guid, Phrase> Phrases, IReadOnlyList<TriggerIssue> Issues);
+
+/// <summary>A hotkey that cannot be used, with the reason shown to the user.</summary>
+/// <param name="Gesture">The key combination.</param>
+/// <param name="Message">Why it cannot be used and what to do.</param>
+public sealed record HotkeyConflict(HotkeyGesture Gesture, string Message);
 
 /// <summary>Whether the library on disk matches the library in memory.</summary>
 public enum SaveState
@@ -41,8 +45,10 @@ public sealed partial class LibraryService : IDisposable
     private readonly ILogger<LibraryService> _logger;
     private readonly Debouncer _saver;
     private readonly Lock _gate = new();
+    private readonly Lock _saveLock = new();
+    private long _version;
     private LibrarySnapshot _snapshot = Create(PhraseLibrary.Empty, []);
-    private IReadOnlyList<HotkeyGesture> _hotkeyConflicts = [];
+    private IReadOnlyList<HotkeyConflict> _hotkeyConflicts = [];
     private SaveState _saveState;
 
     /// <summary>Creates the service.</summary>
@@ -134,9 +140,9 @@ public sealed partial class LibraryService : IDisposable
         Changed?.Invoke(this, snapshot);
     }
 
-    /// <summary>Records hotkeys that another application already owns, so they show as problems.</summary>
-    /// <param name="conflicts">Gestures that could not be registered.</param>
-    public void ReportHotkeyConflicts(IReadOnlyList<HotkeyGesture> conflicts)
+    /// <summary>Records hotkeys that cannot be used (owned by another app, or they type a character), so they show as problems.</summary>
+    /// <param name="conflicts">The unusable hotkeys and why.</param>
+    public void ReportHotkeyConflicts(IReadOnlyList<HotkeyConflict> conflicts)
     {
         ArgumentNullException.ThrowIfNull(conflicts);
         LibrarySnapshot snapshot;
@@ -175,7 +181,7 @@ public sealed partial class LibraryService : IDisposable
     /// <summary>Saves pending changes and stops the save timer.</summary>
     public void Dispose() => _saver.Dispose();
 
-    private static LibrarySnapshot Create(PhraseLibrary library, IReadOnlyList<HotkeyGesture> conflicts)
+    private static LibrarySnapshot Create(PhraseLibrary library, IReadOnlyList<HotkeyConflict> conflicts)
     {
         var issues = TriggerValidator.Validate(library).ToList();
         if (conflicts.Count > 0)
@@ -185,14 +191,10 @@ public sealed partial class LibraryService : IDisposable
                 for (var position = 0; position < phrase.Triggers.Count; position++)
                 {
                     if (phrase.Triggers[position] is HotkeyTrigger hotkey
-                        && conflicts.Contains(hotkey.Gesture)
+                        && conflicts.FirstOrDefault(c => c.Gesture == hotkey.Gesture) is { } conflict
                         && !issues.Any(i => i.PhraseId == phrase.Id && i.TriggerPosition == position))
                     {
-                        issues.Add(new TriggerIssue(
-                            phrase.Id,
-                            position,
-                            IssueSeverity.Error,
-                            string.Create(CultureInfo.InvariantCulture, $"Another app or Windows already uses {hotkey.Gesture}. Choose a different hotkey.")));
+                        issues.Add(new TriggerIssue(phrase.Id, position, IssueSeverity.Error, conflict.Message));
                     }
                 }
             }
@@ -207,22 +209,40 @@ public sealed partial class LibraryService : IDisposable
         lock (_gate)
         {
             _snapshot = Create(library, _hotkeyConflicts);
+            _version++;
             return _snapshot;
         }
     }
 
     private void SaveNow()
     {
-        var library = Snapshot.Library;
-        try
+        // The timer and Flush can save at the same time. Reading the snapshot inside the save lock makes
+        // the newest library the last one written.
+        lock (_saveLock)
         {
-            _store.Save(library);
-            SetSaveState(SaveState.Saved);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            LogSaveFailed(_logger, ex);
-            SetSaveState(SaveState.Failed);
+            PhraseLibrary library;
+            long version;
+            lock (_gate)
+            {
+                library = _snapshot.Library;
+                version = _version;
+            }
+
+            try
+            {
+                _store.Save(library);
+
+                // A newer edit arrived while saving: it has its own save scheduled, so stay "Saving".
+                if (Interlocked.Read(ref _version) == version)
+                {
+                    SetSaveState(SaveState.Saved);
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                LogSaveFailed(_logger, ex);
+                SetSaveState(SaveState.Failed);
+            }
         }
     }
 

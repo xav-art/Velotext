@@ -30,6 +30,12 @@ public interface IClipboardService
 /// <summary>Gives access to the input sequencer on the thread that owns it.</summary>
 public interface ISequencerHost
 {
+    /// <summary>
+    /// Changes every time the caret may have moved (a click or a window change). An operation compares
+    /// it with the value at its start and stops before typing into a place the user left.
+    /// </summary>
+    long ContextGeneration { get; }
+
     /// <summary>Runs an action against the sequencer on its thread.</summary>
     /// <param name="action">The action.</param>
     void Post(Action<InputSequencer> action);
@@ -52,6 +58,10 @@ public interface ISystemState
 
     /// <summary>The window that has the clipboard open, or zero.</summary>
     nint OpenClipboardWindow();
+
+    /// <summary>True when the window is a console or terminal, where Ctrl+Z does not undo (it can suspend a program).</summary>
+    /// <param name="window">Window handle.</param>
+    bool IsTerminal(nint window);
 }
 
 /// <summary>The real system state.</summary>
@@ -63,6 +73,25 @@ public sealed class WindowsSystemState : ISystemState
     /// <inheritdoc />
     public bool IsKeyDown(int virtualKey) => (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
+    private static readonly HashSet<string> s_terminalClasses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "mintty", "PuTTY", "KiTTY", "VirtualConsoleClass",
+        "Alacritty", "org.wezfurlong.wezterm",
+    };
+
     /// <inheritdoc />
     public nint OpenClipboardWindow() => NativeMethods.GetOpenClipboardWindow();
+
+    /// <inheritdoc />
+    public unsafe bool IsTerminal(nint window)
+    {
+        if (window == 0)
+        {
+            return false;
+        }
+
+        var buffer = stackalloc char[256];
+        var length = NativeMethods.GetClassNameW(window, buffer, 256);
+        return length > 0 && s_terminalClasses.Contains(new string(buffer, 0, length));
+    }
 }

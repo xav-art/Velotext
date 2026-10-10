@@ -129,7 +129,7 @@ public sealed class UiRenderTests : IDisposable
                 new AutostartService("VelotextTest", root + @"\Run", root + @"\Approved"),
                 _env.Library,
                 _env.Dialogs,
-                new SettingsActions(@"C:\Apps\Velotext.exe", _env.Directory, _env.Paths.LogDirectory, _ => { }, _ => { }, _ => { }, () => false));
+                new SettingsActions(@"C:\Apps\Velotext.exe", _env.Directory, _env.Paths.LogDirectory, _ => { }, _ => { }, _ => { }, _ => null));
             var window = new SettingsWindow(vm) { Left = -20000, Top = -20000, ShowActivated = false };
             window.Show();
             try

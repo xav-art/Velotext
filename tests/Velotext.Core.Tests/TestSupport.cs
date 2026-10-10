@@ -75,11 +75,15 @@ internal sealed class RecordingSink : IInputSequencerSink
 
     public List<IReadOnlyList<KeyStroke>> Replays { get; } = [];
 
+    public List<(long OperationId, int Count)> Discards { get; } = [];
+
     public void ExpansionRequested(ExpansionRequest request) => Expansions.Add(request);
 
     public void UndoRequested(UndoRequest request) => Undos.Add(request);
 
     public void ReplayRequested(IReadOnlyList<KeyStroke> keys) => Replays.Add(keys);
+
+    public void HeldKeysDiscarded(long operationId, int count) => Discards.Add((operationId, count));
 }
 
 /// <summary>Key event helpers. Text keys carry their character in the scan code field for <see cref="FakeTranslator"/>.</summary>

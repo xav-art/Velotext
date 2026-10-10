@@ -48,6 +48,50 @@ public static class LinkPolicy
         return uri.AbsoluteUri;
     }
 
+    /// <summary>
+    /// Returns true when the visible text of a link looks like an address on a different site than the
+    /// one the link opens, for example the text "www.example.com" on a link to another host. Phishing
+    /// mails use this trick, and pasted HTML shows only the text.
+    /// </summary>
+    /// <param name="visibleText">The text the reader sees.</param>
+    /// <param name="url">The address the link opens.</param>
+    public static bool IsMisleading(string? visibleText, string? url)
+    {
+        var target = Normalize(url);
+        var shown = visibleText?.Trim();
+        if (target is null || string.IsNullOrEmpty(shown) || shown.Contains(' ', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var shownAddress = Normalize(shown);
+        if (shownAddress is null)
+        {
+            return false;
+        }
+
+        var shownHost = new Uri(shownAddress).Host;
+        var lastLabel = shownHost[(shownHost.LastIndexOf('.') + 1)..];
+
+        // Only text that names a real domain (it ends in letters, such as .com) counts as an address.
+        if (!shownHost.Contains('.', StringComparison.Ordinal) || lastLabel.Length < 2 || !lastLabel.All(char.IsAsciiLetter))
+        {
+            return false;
+        }
+
+        return !string.Equals(WithoutWww(shownHost), WithoutWww(new Uri(target).Host), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Returns the host of an allowed address, for display, or <c>null</c>.</summary>
+    /// <param name="url">The address.</param>
+    public static string? HostOf(string? url) =>
+        Normalize(url) is { } normalized && new Uri(normalized) is var uri
+            ? (string.IsNullOrEmpty(uri.Host) ? uri.Scheme + ":" : WithoutWww(uri.Host))
+            : null;
+
+    private static string WithoutWww(string host) =>
+        host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) ? host[4..] : host;
+
     private static bool HasScheme(string text)
     {
         var colon = text.IndexOf(':', StringComparison.Ordinal);

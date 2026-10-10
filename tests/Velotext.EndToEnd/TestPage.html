@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<!-- Velotext: local page with a rich text editor for end-to-end tests in Edge and Chrome. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Velotext E2E editor</title>
+  <style>
+    body { font-family: Segoe UI, sans-serif; margin: 24px; }
+    #editor { min-height: 200px; border: 1px solid #888; padding: 8px; }
+  </style>
+</head>
+<body>
+  <p>Velotext end-to-end test page. Do not type here during a test run.</p>
+  <div id="editor" contenteditable="true"></div>
+  <script>
+    window.addEventListener('load', () => document.getElementById('editor').focus());
+  </script>
+</body>
+</html>

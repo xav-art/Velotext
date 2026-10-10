@@ -60,9 +60,28 @@ public readonly record struct HotkeyGesture(HotkeyModifiers Modifiers, int Key)
             }
 
             var hasCommandModifier = (Modifiers & (HotkeyModifiers.Control | HotkeyModifiers.Alt | HotkeyModifiers.Windows)) != 0;
-            return hasCommandModifier || IsFunctionKey
-                ? null
-                : "Add Ctrl, Alt or Win. Only F1 to F24 can be used on their own.";
+            if (!hasCommandModifier && !IsFunctionKey)
+            {
+                return "Add Ctrl, Alt or Win. You can use F1 to F24 without them.";
+            }
+
+            return IsStandardShortcut ? $"{this} is a standard shortcut in most apps. Choose a different hotkey." : null;
+        }
+    }
+
+    /// <summary>
+    /// True for shortcuts that apps and Windows rely on (copy, paste, cut, undo, redo, select all, save,
+    /// close, switch window). Taking them over would break normal work, and Velotext pastes with Ctrl+V itself.
+    /// </summary>
+    public bool IsStandardShortcut
+    {
+        get
+        {
+            var ctrlOnly = Modifiers is HotkeyModifiers.Control or (HotkeyModifiers.Control | HotkeyModifiers.Shift);
+            return (ctrlOnly && Key is 0x41 or 0x43 or 0x56 or 0x58 or 0x59 or 0x5A or 0x53 or 0x0D or 0x2D or 0x2E or 0x09)
+                || (Modifiers == HotkeyModifiers.Shift && Key is 0x2D or 0x2E)
+                || (Modifiers == HotkeyModifiers.Alt && Key is 0x73 or 0x09 or 0x1B)
+                || (Modifiers.HasFlag(HotkeyModifiers.Windows) && Key is 0x4C or 0x44 or 0x45 or 0x52 or 0x56 or 0x09);
         }
     }
 

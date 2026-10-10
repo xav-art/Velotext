@@ -4,7 +4,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
-using Velotext.Platform.Windows.Interop;
 using Velotext.Platform.Windows.Native;
 using Velotext.Platform.Windows.Threading;
 
@@ -27,6 +26,9 @@ public enum PasteOutcome
 
     /// <summary>Someone else put new content on the clipboard meanwhile; it is left alone.</summary>
     ReplacedByOther = 2,
+
+    /// <summary>The user clicked or changed windows before the paste keystroke, so it was not sent.</summary>
+    Cancelled = 3,
 }
 
 /// <summary>
@@ -34,10 +36,16 @@ public enum PasteOutcome
 /// phrase with delayed rendering (so it can see exactly when the target application reads it), and
 /// restores the saved clipboard once the target has read it. The temporary content carries the
 /// Windows flags that keep it out of clipboard history, cloud clipboard and clipboard managers.
+/// While Velotext waits to open the clipboard it keeps answering render requests, so a reader that
+/// holds the clipboard open is never blocked. A restore that cannot open the clipboard is retried, and
+/// stopping the service restores any pending paste first, so the user's clipboard is not lost.
 /// </summary>
 public sealed partial class ClipboardService : Expansion.IClipboardService, IDisposable
 {
     private const int OpenAttempts = 25;
+    private const int RestoreRetries = 20;
+    private const nuint RestoreTimerId = 1;
+    private const uint RestoreRetryMilliseconds = 250;
     private const int MaxFormatBytes = 32 * 1024 * 1024;
     private const int MaxSnapshotBytes = 64 * 1024 * 1024;
 
@@ -60,6 +68,7 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
     private readonly uint _cloudFormat;
     private PasteSession? _session;
     private bool _emptyingOurselves;
+    private int _restoreRetriesLeft;
 
     /// <summary>Starts the clipboard thread.</summary>
     /// <param name="logger">Diagnostics logger. Never receives clipboard content.</param>
@@ -83,7 +92,9 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
         ArgumentNullException.ThrowIfNull(payload);
         return _thread.InvokeAsync(() =>
         {
-            var snapshot = Capture();
+            // If an earlier paste still waits to restore, the clipboard holds that phrase, not the user's
+            // content. Reuse the earlier snapshot, which is the user's real clipboard.
+            var snapshot = _session is { ReplacedByOther: false } pending ? pending.Snapshot : Capture();
             if (snapshot is null || !TryOpen())
             {
                 return null;
@@ -93,6 +104,9 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
             try
             {
                 EmptyAsOwner();
+
+                // The new session takes over the saved clipboard, so a pending restore retry stops.
+                NativeMethods.KillTimer(_thread.WindowHandle, RestoreTimerId);
                 _session = session;
 
                 // Content formats are rendered on request, which tells us when the target reads them.
@@ -125,36 +139,15 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
         ArgumentNullException.ThrowIfNull(session);
         return _thread.InvokeAsync(() =>
         {
-            if (!ReferenceEquals(_session, session))
+            if (!ReferenceEquals(_session, session) || TryRestore(session))
             {
                 return;
             }
 
-            _session = null;
-            if (session.ReplacedByOther || !TryOpen())
-            {
-                return;
-            }
-
-            try
-            {
-                EmptyAsOwner();
-                foreach (var (format, data) in session.Snapshot.Formats)
-                {
-                    SetData(format, data);
-                }
-
-                // The restored content is already in clipboard history; do not add it twice. An empty
-                // clipboard stays truly empty.
-                if (session.Snapshot.Formats.Count > 0)
-                {
-                    SetData(_excludeFormat, BitConverter.GetBytes(0));
-                }
-            }
-            finally
-            {
-                NativeMethods.CloseClipboard();
-            }
+            // Another application holds the clipboard. Keep the session, so its formats can still be
+            // rendered, and try again shortly.
+            _restoreRetriesLeft = RestoreRetries;
+            NativeMethods.SetTimer(_thread.WindowHandle, RestoreTimerId, RestoreRetryMilliseconds, 0);
         });
     }
 
@@ -173,7 +166,14 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
 
             try
             {
-                _session = null;
+                // The user asked for the phrase on the clipboard; a pending restore is no longer wanted.
+                NativeMethods.KillTimer(_thread.WindowHandle, RestoreTimerId);
+                if (_session is { } pending)
+                {
+                    _session = null;
+                    pending.Snapshot.Clear();
+                }
+
                 EmptyAsOwner();
                 if (payload.Html is not null)
                 {
@@ -196,13 +196,112 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
     }
 
 
-    /// <summary>Stops the clipboard thread. Pending delayed formats are rendered first by Windows' request.</summary>
-    public void Dispose() => _thread.Dispose();
+    /// <summary>Restores a pending paste, then stops the clipboard thread.</summary>
+    public void Dispose()
+    {
+        try
+        {
+            _thread.InvokeAsync(() =>
+            {
+                if (_session is { } session && !TryRestore(session))
+                {
+                    LogRestoreFailed(_logger);
+                }
+            }).Wait(TimeSpan.FromSeconds(2));
+        }
+        catch (AggregateException)
+        {
+            // The thread is already gone.
+        }
+
+        _thread.Dispose();
+    }
+
+    /// <summary>Puts the saved clipboard back and ends the session. Returns false when the clipboard could not be opened.</summary>
+    private bool TryRestore(PasteSession session)
+    {
+        if (session.ReplacedByOther)
+        {
+            EndSession(session);
+            return true;
+        }
+
+        if (!TryOpen())
+        {
+            return false;
+        }
+
+        try
+        {
+            // The session stays current until the clipboard is open, so render requests are answered meanwhile.
+            EndSession(session);
+            EmptyAsOwner();
+            foreach (var (format, data) in session.Snapshot.Formats)
+            {
+                SetData(format, data);
+            }
+
+            // The restored content is already in clipboard history; do not add it twice. An empty
+            // clipboard stays truly empty.
+            if (session.Snapshot.Formats.Count > 0)
+            {
+                SetData(_excludeFormat, BitConverter.GetBytes(0));
+            }
+
+            // Windows now holds its own copy; do not keep the user's clipboard content in Velotext's memory.
+            session.Snapshot.Clear();
+            return true;
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
+    }
+
+    private void EndSession(PasteSession session)
+    {
+        if (ReferenceEquals(_session, session))
+        {
+            _session = null;
+        }
+
+        NativeMethods.KillTimer(_thread.WindowHandle, RestoreTimerId);
+        if (session.ReplacedByOther)
+        {
+            session.Snapshot.Clear();
+        }
+    }
+
+    private void RetryRestore()
+    {
+        if (_session is not { } session)
+        {
+            NativeMethods.KillTimer(_thread.WindowHandle, RestoreTimerId);
+            return;
+        }
+
+        if (TryRestore(session))
+        {
+            return;
+        }
+
+        if (--_restoreRetriesLeft <= 0)
+        {
+            // Give up: leave the phrase on the clipboard rather than an empty clipboard.
+            LogRestoreFailed(_logger);
+            RenderAllNow(session);
+            EndSession(session);
+            session.Snapshot.Clear();
+        }
+    }
 
     private nint? OnWindowMessage(uint message, nint wParam, nint lParam)
     {
         switch (message)
         {
+            case NativeMethods.WmTimer when (nuint)wParam == RestoreTimerId:
+                RetryRestore();
+                return 0;
             case NativeMethods.WmRenderFormat:
                 RenderFormat((uint)wParam);
                 return 0;
@@ -228,15 +327,13 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
             return;
         }
 
-        // The requester has the clipboard open; find out whether it is the paste target.
+        // Someone read the phrase. Usually the target, or a helper process of it (browsers and store apps
+        // read from another process). Clipboard monitors skip the content because of the privacy flags.
+        // A reader may open the clipboard without a window; the read still counts.
         var requester = NativeMethods.GetOpenClipboardWindow();
-        if (requester != 0)
+        if (requester != _thread.WindowHandle)
         {
-            NativeMethods.GetWindowThreadProcessId(requester, out var requesterProcess);
-            if (ProcessTree.IsSameOrDescendant(requesterProcess, session.TargetProcessId))
-            {
-                session.MarkConsumed(requester);
-            }
+            session.MarkConsumed(requester);
         }
 
         var data = Render(session.Payload, format);
@@ -248,7 +345,16 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
 
     private void RenderAll()
     {
-        if (_session is not { } session || !TryOpen())
+        if (_session is { } session)
+        {
+            RenderAllNow(session);
+        }
+    }
+
+    /// <summary>Replaces the delayed formats with real data, so the clipboard is not left with formats that render nothing.</summary>
+    private void RenderAllNow(PasteSession session)
+    {
+        if (!TryOpen())
         {
             return;
         }
@@ -310,9 +416,10 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
         }
     }
 
-    private bool TryOpen()
+    private unsafe bool TryOpen()
     {
-        // Another application may hold the clipboard for a moment; retry briefly.
+        // Another application may hold the clipboard for a moment; retry briefly. While waiting, answer
+        // messages sent by other threads: the holder may be waiting for this thread to render a format.
         for (var attempt = 0; attempt < OpenAttempts; attempt++)
         {
             if (NativeMethods.OpenClipboard(_thread.WindowHandle))
@@ -320,7 +427,8 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
                 return true;
             }
 
-            Thread.Sleep(10);
+            NativeMethods.MsgWaitForMultipleObjectsEx(0, null, 10, NativeMethods.QsSendMessage, 0);
+            NativeMethods.PeekMessageW(out _, 0, 0, 0, NativeMethods.PmNoRemoveSentOnly);
         }
 
         LogClipboardBusy(_logger);
@@ -425,13 +533,26 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
     [LoggerMessage(Level = LogLevel.Warning, Message = "The clipboard is held by another application.")]
     private static partial void LogClipboardBusy(ILogger logger);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Velotext could not put the user's clipboard back; the phrase stays on the clipboard.")]
+    private static partial void LogRestoreFailed(ILogger logger);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "Clipboard thread error.")]
     private static partial void LogError(ILogger logger, Exception exception);
 }
 
 /// <summary>A saved copy of the clipboard's memory-based formats, in their original order.</summary>
 /// <param name="Formats">Format ids and their bytes.</param>
-public sealed record ClipboardSnapshot(IReadOnlyList<(uint Format, byte[] Data)> Formats);
+public sealed record ClipboardSnapshot(IReadOnlyList<(uint Format, byte[] Data)> Formats)
+{
+    /// <summary>Overwrites the saved bytes with zeros once they are no longer needed.</summary>
+    public void Clear()
+    {
+        foreach (var (_, data) in Formats)
+        {
+            Array.Clear(data);
+        }
+    }
+}
 
 /// <summary>One paste in progress: what is offered, to whom, and what was saved.</summary>
 public sealed class PasteSession

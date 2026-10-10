@@ -74,19 +74,29 @@
     <Setter Property="FontSize" Value="{StaticResource Velotext.CaptionSize}" />
     <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
     <Setter Property="Background" Value="Transparent" />
-    <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}" />
+    <!-- The unchecked outline uses the strong stroke, so the chip edge has 3:1 contrast. -->
+    <Setter Property="BorderBrush" Value="{DynamicResource Velotext.StrokeStrong}" />
     <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="FocusVisualStyle" Value="{x:Null}" />
     <Setter Property="Template">
       <Setter.Value>
         <ControlTemplate TargetType="ToggleButton">
-          <Border x:Name="Pill" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                  BorderThickness="1" CornerRadius="14" Padding="{TemplateBinding Padding}" MinHeight="{TemplateBinding MinHeight}">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-              <views:Glyph x:Name="Check" Style="{StaticResource Velotext.Icon}" Text="&#xE73E;" FontSize="11" Margin="0,0,6,0" Visibility="Collapsed" />
-              <ContentPresenter VerticalAlignment="Center" />
-            </StackPanel>
-          </Border>
+          <Grid>
+            <Border x:Name="Pill" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="1" CornerRadius="14" Padding="{TemplateBinding Padding}" MinHeight="{TemplateBinding MinHeight}">
+              <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                <views:Glyph x:Name="Check" Style="{StaticResource Velotext.Icon}" Text="&#xE73E;" FontSize="11" Margin="0,0,6,0" Visibility="Collapsed" />
+                <ContentPresenter VerticalAlignment="Center" />
+              </StackPanel>
+            </Border>
+            <!-- Keyboard focus ring, drawn outside the pill. -->
+            <Border x:Name="FocusRing" Margin="-3" CornerRadius="17" BorderThickness="2" Visibility="Collapsed"
+                    BorderBrush="{DynamicResource TextFillColorPrimaryBrush}" IsHitTestVisible="False" />
+          </Grid>
           <ControlTemplate.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+              <Setter TargetName="FocusRing" Property="Visibility" Value="Visible" />
+            </Trigger>
             <Trigger Property="IsChecked" Value="True">
               <Setter TargetName="Check" Property="Visibility" Value="Visible" />
               <Setter TargetName="Pill" Property="BorderBrush" Value="{DynamicResource AccentFillColorDefaultBrush}" />

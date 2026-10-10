@@ -16,8 +16,12 @@ public sealed class DialogService : IDialogService
         ?? Application.Current?.MainWindow;
 
     /// <inheritdoc />
-    public bool Confirm(string title, string message, string confirmText, bool destructive) =>
-        MessageDialog.Confirm(Owner, title, message, confirmText);
+    public bool Confirm(string title, string message, string confirmText, bool destructive, string? details = null) =>
+        MessageDialog.Confirm(Owner, title, message, confirmText, destructive, details);
+
+    /// <inheritdoc />
+    public int? Choose(string title, string message, IReadOnlyList<string> options, string confirmText) =>
+        MessageDialog.Choose(Owner, title, message, options, confirmText);
 
     /// <inheritdoc />
     public void ShowError(string title, string message) => MessageDialog.Show(Owner, title, message);

@@ -55,6 +55,14 @@ public interface IInputSequencerSink
     /// <summary>Send these held-back keys again, marked as <see cref="KeyOrigin.Replay"/>, in this order.</summary>
     /// <param name="keys">The keys to replay.</param>
     void ReplayRequested(IReadOnlyList<KeyStroke> keys);
+
+    /// <summary>
+    /// Keys typed during an operation were not replayed, because the user clicked or changed windows
+    /// meanwhile and the keys could land in the wrong place. Tell the user.
+    /// </summary>
+    /// <param name="operationId">The operation that held the keys.</param>
+    /// <param name="count">Number of key presses discarded.</param>
+    void HeldKeysDiscarded(long operationId, int count);
 }
 
 /// <summary>Timeouts and limits of the sequencer.</summary>
@@ -74,7 +82,10 @@ public sealed record InputSequencerOptions
 /// The keyboard state machine. It feeds typed characters to the <see cref="AutotextMatcher"/>, asks
 /// the sink to expand matches, and while an expansion or undo runs it holds back every key the user
 /// types, then replays them in their original order. Key releases of keys pressed before the hold
-/// pass straight through, so modifiers are never stuck.
+/// pass straight through, so modifiers are never stuck; each held key carries the modifiers the user
+/// held, so the replay can restore them. Physical keys are never dropped: a replay that does not come
+/// back only releases the keys waiting behind it. When the user clicks or changes windows during an
+/// operation, held keys are discarded (the sink is told), because they could land in the wrong place.
 /// All members must be called from the keyboard hook thread.
 /// </summary>
 public sealed class InputSequencer
@@ -88,14 +99,15 @@ public sealed class InputSequencer
     private readonly Dictionary<long, long> _activeOperations = [];
     private readonly List<KeyStroke> _pending = [];
     private readonly List<KeyStroke> _replayRemainder = [];
+    private readonly Queue<KeyStroke> _inFlight = new();
     private readonly HashSet<int> _heldDowns = [];
     private readonly HashSet<int> _suppressedUps = [];
 
     private long _nextOperationId;
-    private int _replayOutstanding;
     private long _replayStarted;
     private UndoTicket? _undo;
     private bool _undoDelimiterPending;
+    private bool _contextLostDuringOperation;
 
     /// <summary>Creates a sequencer.</summary>
     /// <param name="matcher">The autotext matcher.</param>
@@ -110,7 +122,11 @@ public sealed class InputSequencer
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
         _time = time ?? throw new ArgumentNullException(nameof(time));
         _options = options ?? new InputSequencerOptions();
+        OperationTimeout = _options.OperationTimeout;
     }
+
+    /// <summary>Longest an operation may hold the keyboard. Updated when the paste timeout setting changes.</summary>
+    public TimeSpan OperationTimeout { get; set; }
 
     /// <summary>When false (paused), triggers never fire.</summary>
     public bool Enabled { get; set; } = true;
@@ -122,10 +138,13 @@ public sealed class InputSequencer
     public bool UndoEnabled { get; set; } = true;
 
     /// <summary>True while keys are being held back.</summary>
-    public bool IsHolding => _activeOperations.Count > 0 || _replayOutstanding > 0 || _pending.Count > 0;
+    public bool IsHolding => _activeOperations.Count > 0 || _inFlight.Count > 0 || _pending.Count > 0;
 
-    /// <summary>Number of held keys dropped because their replay never came back (for diagnostics).</summary>
+    /// <summary>Number of replayed keys that never came back: the system refused them or another program swallowed them (for diagnostics).</summary>
     public int DroppedKeyCount { get; private set; }
+
+    /// <summary>Number of held key presses discarded after a click or window change during an operation (for diagnostics).</summary>
+    public int DiscardedKeyCount { get; private set; }
 
     /// <summary>Handles one keyboard event and decides whether it reaches the application.</summary>
     /// <param name="key">The event.</param>
@@ -136,13 +155,19 @@ public sealed class InputSequencer
             return KeyDecision.Pass;
         }
 
-        var isReturningReplay = key.Origin == KeyOrigin.Replay && _replayOutstanding > 0;
+        var stroke = key;
+        var isReturningReplay = key.Origin == KeyOrigin.Replay && _inFlight.Count > 0;
         if (isReturningReplay)
         {
-            _replayOutstanding--;
+            // Use the key as it was recorded, with the modifiers the user held, in case it is held again.
+            var sent = _inFlight.Dequeue();
+            if (sent.VirtualKey == key.VirtualKey && sent.IsKeyUp == key.IsKeyUp)
+            {
+                stroke = sent;
+            }
         }
 
-        var decision = ShouldHold(key) ? Hold(key) : Process(key);
+        var decision = ShouldHold(stroke) ? Hold(stroke) : Process(stroke);
 
         // Keys typed while the replay was in flight wait until the whole replay is back.
         if (isReturningReplay)
@@ -158,6 +183,10 @@ public sealed class InputSequencer
     {
         _matcher.Reset();
         _undo = null;
+        if (_activeOperations.Count > 0)
+        {
+            _contextLostDuringOperation = true;
+        }
     }
 
     /// <summary>Starts an operation that did not come from typing (for example a hotkey) and holds keys until it completes.</summary>
@@ -175,7 +204,7 @@ public sealed class InputSequencer
             return; // already released by a timeout
         }
 
-        if (outcome.SeedText is not null)
+        if (outcome.SeedText is not null && !_contextLostDuringOperation)
         {
             _matcher.Seed(outcome.SeedText);
         }
@@ -186,7 +215,7 @@ public sealed class InputSequencer
 
         if (_activeOperations.Count == 0)
         {
-            Flush(outcome.Undo);
+            Release(operationId, outcome.Undo);
         }
     }
 
@@ -194,7 +223,34 @@ public sealed class InputSequencer
     /// <param name="notInserted">Number of keys the system refused.</param>
     public void ReplayInjectionFailed(int notInserted)
     {
-        _replayOutstanding = Math.Max(0, _replayOutstanding - Math.Max(0, notInserted));
+        // SendInput stops at the first refused event, so the refused keys are the newest ones.
+        var refused = Math.Min(Math.Max(0, notInserted), _inFlight.Count);
+        if (refused > 0)
+        {
+            var kept = _inFlight.Take(_inFlight.Count - refused).ToList();
+            _inFlight.Clear();
+            foreach (var key in kept)
+            {
+                _inFlight.Enqueue(key);
+            }
+
+            DroppedKeyCount += refused;
+        }
+
+        FlushIfIdle();
+    }
+
+    /// <summary>
+    /// Ends every operation and replays all held keys at once, for example before the hook is removed at
+    /// shutdown, so no typed key is lost.
+    /// </summary>
+    public void ReleaseAll()
+    {
+        var last = _activeOperations.Count > 0 ? _activeOperations.Keys.Max() : 0;
+        _activeOperations.Clear();
+        _inFlight.Clear();
+        _matcher.Reset();
+        Release(last, undo: null);
     }
 
     /// <summary>Applies timeouts. Call periodically (a few times per second) from the keyboard thread.</summary>
@@ -203,7 +259,7 @@ public sealed class InputSequencer
         var now = _time.GetTimestamp();
         if (_activeOperations.Count > 0)
         {
-            var expired = _activeOperations.Where(op => _time.GetElapsedTime(op.Value, now) > _options.OperationTimeout).Select(op => op.Key).ToList();
+            var expired = _activeOperations.Where(op => _time.GetElapsedTime(op.Value, now) > OperationTimeout).Select(op => op.Key).ToList();
             foreach (var id in expired)
             {
                 _activeOperations.Remove(id);
@@ -212,22 +268,17 @@ public sealed class InputSequencer
             if (expired.Count > 0 && _activeOperations.Count == 0)
             {
                 _matcher.Reset();
-                Flush(undo: null);
+                Release(expired[^1], undo: null);
             }
         }
 
-        if (_replayOutstanding > 0 && _time.GetElapsedTime(_replayStarted, now) > _options.ReplayTimeout)
+        if (_inFlight.Count > 0 && _time.GetElapsedTime(_replayStarted, now) > _options.ReplayTimeout)
         {
-            // The replay never came back (for example the system blocked it). Release the keyboard
-            // rather than hold the user's typing forever.
-            _replayOutstanding = 0;
-            if (_activeOperations.Count == 0)
-            {
-                DroppedKeyCount += _pending.Count;
-                _pending.Clear();
-                _replayRemainder.Clear();
-                _heldDowns.Clear();
-            }
+            // Some replayed keys never came back (another program swallowed them, or the system blocked
+            // them). They may have arrived, so they are not sent twice; the keys typed meanwhile are
+            // released below instead of being held forever.
+            DroppedKeyCount += _inFlight.Count;
+            _inFlight.Clear();
         }
 
         // Safety net: never leave keys waiting when nothing is running.
@@ -236,21 +287,25 @@ public sealed class InputSequencer
 
     private bool ShouldHold(in KeyStroke key) =>
         _activeOperations.Count > 0
-        || (key.Origin == KeyOrigin.Physical && (_replayOutstanding > 0 || _pending.Count > 0));
+        || (key.Origin == KeyOrigin.Physical && (_inFlight.Count > 0 || _pending.Count > 0));
 
     private KeyDecision Hold(in KeyStroke key)
     {
         var vk = key.VirtualKey;
         if (key.IsKeyUp)
         {
-            if (_suppressedUps.Remove(vk))
+            if (_heldDowns.Remove(vk))
+            {
+                // Presses of this key are held (for example auto-repeat), so its release waits with them.
+                _suppressedUps.Remove(vk);
+            }
+            else if (_suppressedUps.Remove(vk))
             {
                 return KeyDecision.Swallow;
             }
-
-            // A release whose press was delivered must be delivered too, or the key would look stuck.
-            if (!_heldDowns.Remove(vk))
+            else
             {
+                // A release whose press was delivered must be delivered too, or the key would look stuck.
                 return KeyDecision.Pass;
             }
         }
@@ -277,6 +332,8 @@ public sealed class InputSequencer
             return _suppressedUps.Remove(vk) ? KeyDecision.Swallow : KeyDecision.Pass;
         }
 
+        // This press reaches the application (unless it starts an operation below), so its release must too.
+        _suppressedUps.Remove(vk);
         var meaning = _translator.Translate(key);
 
         if (_undo is not null)
@@ -353,9 +410,40 @@ public sealed class InputSequencer
 
     private void FlushIfIdle()
     {
-        if (_activeOperations.Count == 0 && _replayOutstanding == 0 && (_pending.Count > 0 || _replayRemainder.Count > 0))
+        if (_activeOperations.Count == 0 && _inFlight.Count == 0 && (_pending.Count > 0 || _replayRemainder.Count > 0))
         {
             Flush(undo: null);
+        }
+    }
+
+    /// <summary>Ends the hold after the last operation: replays the held keys, or discards them after a context loss.</summary>
+    private void Release(long operationId, UndoTicket? undo)
+    {
+        if (!_contextLostDuringOperation)
+        {
+            Flush(undo);
+            return;
+        }
+
+        _contextLostDuringOperation = false;
+        _undo = null;
+        var held = _replayRemainder.Concat(_pending).ToList();
+        _replayRemainder.Clear();
+        _pending.Clear();
+        _heldDowns.Clear();
+
+        // Modifier presses and releases still go through, so Shift, Ctrl and Alt end up in the right state.
+        var modifiers = held.Where(k => k.IsModifierKey).Select(k => k.AsReplay()).ToList();
+        if (modifiers.Count > 0)
+        {
+            StartReplay(modifiers);
+        }
+
+        var discarded = held.Count(k => !k.IsKeyUp && !k.IsModifierKey);
+        if (discarded > 0)
+        {
+            DiscardedKeyCount += discarded;
+            _sink.HeldKeysDiscarded(operationId, discarded);
         }
     }
 
@@ -375,7 +463,16 @@ public sealed class InputSequencer
         batch.AddRange(_pending.Select(k => k.AsReplay()));
         _replayRemainder.Clear();
         _pending.Clear();
-        _replayOutstanding += batch.Count;
+        StartReplay(batch);
+    }
+
+    private void StartReplay(List<KeyStroke> batch)
+    {
+        foreach (var key in batch)
+        {
+            _inFlight.Enqueue(key);
+        }
+
         _replayStarted = _time.GetTimestamp();
         _sink.ReplayRequested(batch);
     }

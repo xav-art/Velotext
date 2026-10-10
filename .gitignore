@@ -20,6 +20,15 @@ coverage/
 Releases/
 *.binlog
 
+# Signing keys and secrets (never commit them; CI gets them from encrypted secrets)
+*.pfx
+*.p12
+*.snk
+*.pem
+*.key
+.env
+*.publishsettings
+
 # Editor and OS clutter
 .vs/
 .vscode/

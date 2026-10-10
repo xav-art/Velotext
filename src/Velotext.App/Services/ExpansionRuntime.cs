@@ -118,8 +118,7 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
         _clipboard = new ClipboardService(_loggers.CreateLogger<ClipboardService>());
         _engine = new ExpansionEngine(this, _clipboard, new InputInjector(), new WindowsSystemState(), _time, _loggers.CreateLogger<ExpansionEngine>());
 
-        // Operations hold the keyboard at most this long; the paste timeout setting stays well below it.
-        var options = new InputSequencerOptions { OperationTimeout = TimeSpan.FromSeconds(15) };
+        var options = new InputSequencerOptions { OperationTimeout = OperationBudget(_settings.Current) };
         _monitor = new KeyboardMonitor(_engine, _time, options, _loggers.CreateLogger<KeyboardMonitor>());
         _engine.Attach(_monitor);
         _hotkeys = new GlobalHotkeyService(_loggers.CreateLogger<GlobalHotkeyService>());
@@ -149,10 +148,26 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
             _paused = paused;
         }
 
-        _monitor?.Post(sequencer => sequencer.Enabled = !paused);
+        // Two quick toggles from different threads can arrive in any order, so every step reads the
+        // current state instead of the value it was called with.
+        _monitor?.Post(sequencer => sequencer.Enabled = !IsPaused);
         LogPaused(_logger, paused);
-        PausedChanged?.Invoke(this, paused);
+        PausedChanged?.Invoke(this, IsPaused);
     }
+
+    /// <summary>Explains why a hotkey cannot be used because it types a character on this keyboard, or returns <c>null</c>.</summary>
+    /// <param name="gesture">The hotkey.</param>
+    public static string? DescribeTypingConflict(HotkeyGesture gesture) =>
+        KeyboardLayoutProbe.TypedCharacter(gesture) is { } typed
+            ? $"On your keyboard, {gesture} types {typed}. Choose a different hotkey."
+            : null;
+
+    /// <summary>Explains why the pause hotkey cannot be used, or returns <c>null</c>.</summary>
+    /// <param name="gesture">The pause hotkey.</param>
+    public string? DescribePauseHotkeyProblem(HotkeyGesture gesture) =>
+        gesture.ValidationError
+        ?? DescribeTypingConflict(gesture)
+        ?? (PauseHotkeyConflict && _settings.Current.PauseHotkey == gesture ? $"Another app or Windows already uses {gesture}. Choose a different hotkey." : null);
 
     /// <inheritdoc />
     public Phrase? FindPhrase(Guid id) => _library.Snapshot.Phrases.GetValueOrDefault(id);
@@ -164,16 +179,31 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
     public void Notify(ExpansionNotice notice)
     {
         ArgumentNullException.ThrowIfNull(notice);
+        var phrase = notice.PhraseDescription;
         switch (notice.Kind)
         {
             case ExpansionNoticeKind.CopiedToClipboard:
-                _notifications.Show("Copied to the clipboard", $"\"{notice.PhraseDescription}\" is on the clipboard. Press Ctrl+V to paste it.", NotificationKind.Info);
+                _notifications.Show("Copied to the clipboard", $"\"{phrase}\" is on the clipboard. Press Ctrl+V to paste it.", NotificationKind.Info);
                 break;
             case ExpansionNoticeKind.PasteNotConfirmed:
-                _notifications.Show("Paste not confirmed", $"The app did not read \"{notice.PhraseDescription}\". If no text appeared, the app may block pasting.", NotificationKind.Warning);
+                _notifications.Show("Phrase may be missing", $"\"{phrase}\" may not be in the app. If the text is missing, set Insert into to Clipboard only for this phrase.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.ClipboardBusy when notice.TriggerRestored:
+                _notifications.Show("Clipboard in use", "Another app is using the clipboard. Velotext typed your trigger back. Try again.", NotificationKind.Warning);
                 break;
             case ExpansionNoticeKind.ClipboardBusy:
-                _notifications.Show("Clipboard in use", "Another app is using the clipboard. Velotext typed your trigger back. Try again.", NotificationKind.Warning);
+                _notifications.Show("Clipboard in use", $"Another app is using the clipboard. Velotext did not insert \"{phrase}\". Try again.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.WindowChanged:
+                _notifications.Show("Phrase not inserted", $"You clicked or switched windows while Velotext inserted \"{phrase}\", so it stopped. Check the text, then type the trigger again.", NotificationKind.Warning);
+                break;
+            case ExpansionNoticeKind.KeysDiscarded:
+                _notifications.Show(
+                    "Some keys not typed",
+                    notice.KeyCount == 1
+                        ? "You clicked or switched windows while Velotext inserted a phrase, so it did not type the 1 key that you pressed meanwhile. Type it again."
+                        : $"You clicked or switched windows while Velotext inserted a phrase, so it did not type the {notice.KeyCount} keys that you pressed meanwhile. Type them again.",
+                    NotificationKind.Warning);
                 break;
         }
     }
@@ -185,11 +215,22 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         _library.Changed -= OnLibraryChanged;
         _settings.Changed -= OnSettingsChanged;
-        _monitor?.Dispose();
+        // Order matters. The engine stops first: cancelled operations give the clipboard back and release
+        // the keys typed meanwhile. The monitor then delivers any keys still held before it removes the
+        // hook, and the clipboard service restores a paste that still waits for a late read.
         _hotkeys?.Dispose();
         _engine?.Dispose();
+        _monitor?.Dispose();
         _clipboard?.Dispose();
     }
+
+    /// <summary>
+    /// Longest an operation may hold the user's typing: the paste wait from settings plus the fixed steps
+    /// (modifier wait 1 s, up to 3 clipboard opens of about 0.4 s, reader wait and grace about 1.1 s),
+    /// with a margin, so the engine always finishes before the hold is released.
+    /// </summary>
+    private static TimeSpan OperationBudget(AppSettings settings) =>
+        TimeSpan.FromMilliseconds(settings.PasteTimeoutMilliseconds) + TimeSpan.FromSeconds(5);
 
     private static ExpansionSettings ToExpansionSettings(AppSettings settings) => new(
         settings.UndoWithBackspace,
@@ -209,7 +250,12 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
             _expansionSettings = ToExpansionSettings(settings);
         }
 
-        _monitor?.Post(sequencer => sequencer.UndoEnabled = settings.UndoWithBackspace);
+        var budget = OperationBudget(settings);
+        _monitor?.Post(sequencer =>
+        {
+            sequencer.UndoEnabled = settings.UndoWithBackspace;
+            sequencer.OperationTimeout = budget;
+        });
     }
 
     private void OnLibraryChanged(object? sender, LibrarySnapshot snapshot)
@@ -226,20 +272,31 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
         }
 
         // The first phrase with a gesture owns it, matching what validation reports for duplicates.
+        // Combinations that type a character on this keyboard (AltGr) are never registered.
         var registrations = new List<HotkeyRegistration>();
+        var typing = new List<HotkeyConflict>();
         var seen = new HashSet<HotkeyGesture>();
         foreach (var phrase in library.EnumeratePhrases())
         {
             foreach (var hotkey in phrase.Triggers.OfType<HotkeyTrigger>())
             {
-                if (hotkey.Gesture.ValidationError is null && seen.Add(hotkey.Gesture))
+                if (hotkey.Gesture.ValidationError is not null || !seen.Add(hotkey.Gesture))
+                {
+                    continue;
+                }
+
+                if (DescribeTypingConflict(hotkey.Gesture) is { } message)
+                {
+                    typing.Add(new HotkeyConflict(hotkey.Gesture, message));
+                }
+                else
                 {
                     registrations.Add(new HotkeyRegistration(phrase.Id, hotkey.Gesture));
                 }
             }
         }
 
-        if (_settings.Current.PauseHotkey is { } pause && seen.Add(pause))
+        if (_settings.Current.PauseHotkey is { } pause && DescribeTypingConflict(pause) is null && seen.Add(pause))
         {
             registrations.Add(new HotkeyRegistration(s_pauseHotkeyKey, pause));
         }
@@ -264,7 +321,11 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
                 PauseHotkeyConflictChanged?.Invoke(this, pauseConflict);
             }
 
-            _library.ReportHotkeyConflicts([.. failed.Where(g => g != _settings.Current.PauseHotkey)]);
+            _library.ReportHotkeyConflicts([
+                .. typing,
+                .. failed.Where(g => g != _settings.Current.PauseHotkey)
+                    .Select(g => new HotkeyConflict(g, $"Another app or Windows already uses {g}. Choose a different hotkey.")),
+            ]);
         }
         catch (ObjectDisposedException)
         {
@@ -276,7 +337,14 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
     {
         if (key == s_pauseHotkeyKey)
         {
-            SetPaused(!IsPaused);
+            var paused = !IsPaused;
+            SetPaused(paused);
+
+            // The hotkey works with the window hidden, so confirm the new state where the user can see it.
+            _notifications.Show(
+                paused ? "Expansion paused" : "Expansion resumed",
+                paused ? $"Press {_settings.Current.PauseHotkey} to resume." : "Velotext expands your triggers again.",
+                NotificationKind.Info);
             return;
         }
 

@@ -120,7 +120,9 @@ public static class FlowDocumentMapper
                     var hyperlink = new Hyperlink();
                     if (LinkPolicy.Normalize(link.Url) is { } url)
                     {
+                        // The tooltip shows the real address, so a link cannot hide where it goes.
                         hyperlink.NavigateUri = new Uri(url);
+                        hyperlink.ToolTip = url;
                     }
 
                     foreach (var run in link.Runs)

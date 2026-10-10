@@ -10,9 +10,18 @@ public interface IDialogService
     /// <param name="title">A question with the verb and the object, for example "Delete this phrase?".</param>
     /// <param name="message">The consequence.</param>
     /// <param name="confirmText">The verb on the confirm button, for example "Delete phrase".</param>
-    /// <param name="destructive">True when the action removes data.</param>
+    /// <param name="destructive">True when the action removes data; the confirm button is then not the accent button.</param>
+    /// <param name="details">Optional longer text shown in a scrollable area, for example what an import adds.</param>
     /// <returns>True when the user confirmed.</returns>
-    bool Confirm(string title, string message, string confirmText, bool destructive);
+    bool Confirm(string title, string message, string confirmText, bool destructive, string? details = null);
+
+    /// <summary>Asks the user to choose one item from a list.</summary>
+    /// <param name="title">What to choose.</param>
+    /// <param name="message">Help text.</param>
+    /// <param name="options">The items, in display order.</param>
+    /// <param name="confirmText">The verb on the confirm button.</param>
+    /// <returns>The index of the chosen item, or <c>null</c> when cancelled.</returns>
+    int? Choose(string title, string message, IReadOnlyList<string> options, string confirmText);
 
     /// <summary>Shows an error with what happened and what to do.</summary>
     /// <param name="title">What failed.</param>

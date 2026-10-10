@@ -38,6 +38,8 @@ public static class PhraseExchange
     /// <summary>Largest file accepted on import (20 MB).</summary>
     public const int MaxFileBytes = 20 * 1024 * 1024;
 
+    private const string NotAPhraseFile = "Velotext cannot read this file. Choose a .velotext file that Velotext exported.";
+
     /// <summary>Writes the nodes to <paramref name="destination"/>.</summary>
     /// <param name="destination">Writable stream.</param>
     /// <param name="items">Folders and phrases to export.</param>
@@ -64,14 +66,15 @@ public static class PhraseExchange
         {
             document = JsonSerializer.Deserialize(bytes, VelotextJsonContext.Default.ExchangeDocument);
         }
-        catch (JsonException ex)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or ArgumentException or InvalidOperationException)
         {
-            throw new InvalidPhraseFileException("The file is not a valid Velotext phrase file.", ex);
+            // Missing or unknown type markers surface as NotSupportedException; treat every parse failure the same.
+            throw new InvalidPhraseFileException(NotAPhraseFile, ex);
         }
 
         if (document is null || !string.Equals(document.Format, ExchangeDocument.FormatName, StringComparison.Ordinal))
         {
-            throw new InvalidPhraseFileException("The file is not a Velotext phrase file.");
+            throw new InvalidPhraseFileException(NotAPhraseFile);
         }
 
         if (document.Version > ExchangeDocument.CurrentVersion)
@@ -93,7 +96,7 @@ public static class PhraseExchange
         {
             if (buffer.Length + read > MaxFileBytes)
             {
-                throw new InvalidPhraseFileException("The file is larger than 20 MB.");
+                throw new InvalidPhraseFileException("The file is larger than 20 MB. Choose a smaller file.");
             }
 
             buffer.Write(chunk, 0, read);

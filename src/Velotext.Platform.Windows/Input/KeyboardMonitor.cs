@@ -17,12 +17,18 @@ namespace Velotext.Platform.Windows.Input;
 /// thread. Every key event goes through the <see cref="InputSequencer"/>, which decides in microseconds
 /// whether it reaches the application, so the hook never risks the Windows hook timeout.
 /// Mouse clicks and foreground window changes reset the typed context, because the caret may have moved.
+/// Each key carries the modifiers the user physically held, so held keys can be replayed faithfully.
+/// Windows silently removes a low-level hook that once answers too slowly; a watchdog compares the
+/// system's last-input time with the hook's last call and reinstalls the hook when it went quiet.
 /// The typed text never leaves this thread and is never stored or logged.
 /// </summary>
 public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposable
 {
     private const nuint TickTimerId = 1;
     private const uint TickIntervalMilliseconds = 200;
+    private const int SilentHookMilliseconds = 1000;
+    private const int ReinstallIntervalMilliseconds = 60_000;
+    private const int VkLShift = 0xA0;
 
     private readonly ILogger<KeyboardMonitor> _logger;
     private readonly HookProc _keyboardProc;
@@ -34,6 +40,13 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     private nint _keyboardHook;
     private nint _mouseHook;
     private nint _foregroundHook;
+    private long _contextGeneration;
+    private uint _lastHookCall;
+    private int _lastWatchdogReinstall = Environment.TickCount - ReinstallIntervalMilliseconds;
+    private bool _watchdogLogged;
+
+    // Left and right Shift, Ctrl and Alt (VK 0xA0 to 0xA5) as the user physically holds them.
+    private readonly bool[] _physicalModifiers = new bool[6];
 
     /// <summary>Starts the hook thread and installs the hooks.</summary>
     /// <param name="sink">Receives expansion, undo and replay requests (on the hook thread).</param>
@@ -65,6 +78,9 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
 
     private delegate void WinEventProc(nint hook, uint eventType, nint window, int objectId, int childId, uint threadId, uint time);
 
+    /// <inheritdoc />
+    public long ContextGeneration => Interlocked.Read(ref _contextGeneration);
+
     /// <summary>Replaces the autotext triggers. Safe from any thread; takes effect on the next key.</summary>
     /// <param name="index">The new trigger index.</param>
     public void UpdateTriggers(TriggerIndex index) => _matcher.Index = index ?? throw new ArgumentNullException(nameof(index));
@@ -94,7 +110,7 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     {
         RemoveHooks();
         InstallHooks();
-        _sequencer!.OnContextLost();
+        LoseContext(_sequencer!);
     });
 
     /// <summary>Removes the hooks and stops the thread.</summary>
@@ -105,6 +121,7 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
             _thread.InvokeAsync(() =>
             {
                 NativeMethods.KillTimer(_thread.WindowHandle, TickTimerId);
+                _sequencer?.ReleaseAll();
                 RemoveHooks();
             }).Wait(TimeSpan.FromSeconds(2));
         }
@@ -135,6 +152,12 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
             0,
             NativeMethods.WineventOutOfContext);
         _sequencer!.SuppressMatching = ForegroundTarget.Current().IsOwnProcess;
+        for (var i = 0; i < _physicalModifiers.Length; i++)
+        {
+            _physicalModifiers[i] = (NativeMethods.GetAsyncKeyState(VkLShift + i) & 0x8000) != 0;
+        }
+
+        _lastHookCall = (uint)Environment.TickCount;
         LogHooksInstalled(_logger, _mouseHook != 0, _foregroundHook != 0);
     }
 
@@ -172,9 +195,18 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
                     InputMarkers.Replay => KeyOrigin.Replay,
                     _ => KeyOrigin.Physical,
                 };
-                var attributes = ((data->Flags & NativeMethods.LlkhfUp) != 0 ? KeyStrokeAttributes.KeyUp : KeyStrokeAttributes.None)
-                    | ((data->Flags & NativeMethods.LlkhfExtended) != 0 ? KeyStrokeAttributes.Extended : KeyStrokeAttributes.None);
-                var stroke = new KeyStroke((int)data->VirtualKey, (int)data->ScanCode, attributes, origin);
+                _lastHookCall = (uint)Environment.TickCount;
+                var up = (data->Flags & NativeMethods.LlkhfUp) != 0;
+                var vk = (int)data->VirtualKey;
+                if (origin == KeyOrigin.Physical && vk is >= VkLShift and <= VkLShift + 5)
+                {
+                    _physicalModifiers[vk - VkLShift] = !up;
+                }
+
+                var attributes = (up ? KeyStrokeAttributes.KeyUp : KeyStrokeAttributes.None)
+                    | ((data->Flags & NativeMethods.LlkhfExtended) != 0 ? KeyStrokeAttributes.Extended : KeyStrokeAttributes.None)
+                    | HeldModifiers();
+                var stroke = new KeyStroke(vk, (int)data->ScanCode, attributes, origin);
                 if (sequencer.OnKey(stroke) == KeyDecision.Swallow)
                 {
                     return 1;
@@ -190,16 +222,29 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         return NativeMethods.CallNextHookEx(0, code, wParam, lParam);
     }
 
+    private KeyStrokeAttributes HeldModifiers() =>
+        (_physicalModifiers[0] || _physicalModifiers[1] ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
+        | (_physicalModifiers[2] || _physicalModifiers[3] ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
+        | (_physicalModifiers[4] || _physicalModifiers[5] ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
+
+    /// <summary>The caret may have moved: tell the sequencer and let running operations see the change.</summary>
+    private void LoseContext(InputSequencer sequencer)
+    {
+        Interlocked.Increment(ref _contextGeneration);
+        sequencer.OnContextLost();
+    }
+
     private nint OnMouse(int code, nint wParam, nint lParam)
     {
         if (code == NativeMethods.HcAction && _sequencer is { } sequencer)
         {
+            _lastHookCall = (uint)Environment.TickCount;
             var message = (uint)wParam;
             if (message is NativeMethods.WmLButtonDown or NativeMethods.WmRButtonDown or NativeMethods.WmMButtonDown or NativeMethods.WmXButtonDown)
             {
                 try
                 {
-                    sequencer.OnContextLost();
+                    LoseContext(sequencer);
                 }
                 catch (Exception ex)
                 {
@@ -222,7 +267,7 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         {
             NativeMethods.GetWindowThreadProcessId(window, out var processId);
             sequencer.SuppressMatching = processId == (uint)Environment.ProcessId;
-            sequencer.OnContextLost();
+            LoseContext(sequencer);
         }
         catch (Exception ex)
         {
@@ -235,14 +280,45 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         if (message == NativeMethods.WmTimer && (nuint)wParam == TickTimerId)
         {
             _sequencer?.Tick();
+            CheckHookAlive();
             return 0;
         }
 
         return null;
     }
 
+    private void CheckHookAlive()
+    {
+        var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!NativeMethods.GetLastInputInfo(ref info))
+        {
+            return;
+        }
+
+        // Tick counts wrap around; unsigned subtraction keeps the comparison right.
+        var silentFor = unchecked((int)(info.Time - _lastHookCall));
+        if (silentFor < SilentHookMilliseconds || unchecked(Environment.TickCount - _lastWatchdogReinstall) < ReinstallIntervalMilliseconds)
+        {
+            return;
+        }
+
+        // Input happened but the hooks were not called. Windows removed them, or an elevated window has
+        // focus (hooks do not see its input). Reinstalling is harmless in both cases.
+        _lastWatchdogReinstall = Environment.TickCount;
+        RemoveHooks();
+        InstallHooks();
+        if (!_watchdogLogged)
+        {
+            _watchdogLogged = true;
+            LogWatchdogReinstall(_logger);
+        }
+    }
+
     [LoggerMessage(Level = LogLevel.Information, Message = "Keyboard hook installed (mouse hook: {MouseHook}, focus tracking: {ForegroundHook}).")]
     private static partial void LogHooksInstalled(ILogger logger, bool mouseHook, bool foregroundHook);
+
+    [LoggerMessage(Level = LogLevel.Warning, Message = "The keyboard hook stopped receiving input; Velotext reinstalled it. Later reinstalls are not logged.")]
+    private static partial void LogWatchdogReinstall(ILogger logger);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error in a keyboard monitor callback.")]
     private static partial void LogCallbackError(ILogger logger, Exception exception);

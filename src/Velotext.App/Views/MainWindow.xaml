@@ -30,12 +30,30 @@
       <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
     </Style>
 
+    <!-- Problem marker: red error glyph for errors, amber warning glyph for warnings. -->
+    <Style x:Key="ProblemGlyph" TargetType="views:Glyph" BasedOn="{StaticResource Velotext.Icon}">
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="Text" Value="&#xE7BA;" />
+      <Setter Property="Foreground" Value="{DynamicResource Velotext.Warn}" />
+      <Style.Triggers>
+        <DataTrigger Binding="{Binding HasErrors}" Value="True">
+          <Setter Property="Text" Value="&#xEA39;" />
+          <Setter Property="Foreground" Value="{DynamicResource Velotext.Err}" />
+        </DataTrigger>
+      </Style.Triggers>
+    </Style>
+
     <HierarchicalDataTemplate DataType="{x:Type vm:RecentFolderViewModel}" ItemsSource="{Binding Items}">
       <StackPanel Orientation="Horizontal" Height="28">
         <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE81C;" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,8,0" />
         <TextBlock Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
       </StackPanel>
     </HierarchicalDataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:RecentHintViewModel}">
+      <TextBlock Height="28" Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" FontSize="{StaticResource Velotext.CaptionSize}"
+                 Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+    </DataTemplate>
 
     <HierarchicalDataTemplate DataType="{x:Type vm:FolderViewModel}" ItemsSource="{Binding Children}">
       <Grid Height="28">
@@ -44,9 +62,9 @@
           <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
         <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE8B7;" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" Margin="0,0,8,0" />
-        <TextBlock Grid.Column="1" Style="{StaticResource TreeRowText}" Text="{Binding Name}" FontWeight="SemiBold"
+        <TextBlock Grid.Column="1" Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" FontWeight="SemiBold"
                    Visibility="{Binding IsRenaming, Converter={StaticResource Hidden}}" />
-        <TextBox Grid.Column="1" MinWidth="160" Padding="6,2" VerticalAlignment="Center"
+        <TextBox Grid.Column="1" MinWidth="160" Padding="8,4" VerticalAlignment="Center"
                  Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
                  Visibility="{Binding IsRenaming, Converter={StaticResource Visible}}"
                  AutomationProperties.Name="Folder name"
@@ -65,10 +83,9 @@
         <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE8A5;" FontSize="14" Foreground="{DynamicResource TextFillColorTertiaryBrush}" Margin="0,0,8,0" />
         <TextBlock Grid.Column="1" Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" />
         <TextBlock Grid.Column="2" Style="{StaticResource TreeTriggerText}" Text="{Binding TriggerSummary}" />
-        <TextBlock Grid.Column="3" Style="{StaticResource Velotext.Icon}" FontSize="14" Text="&#xE7BA;" Margin="4,0,0,0"
-                   Foreground="{DynamicResource Velotext.Warn}"
-                   Visibility="{Binding HasProblems, Converter={StaticResource Visible}}"
-                   ToolTip="This phrase has a trigger problem" />
+        <views:Glyph Grid.Column="3" Style="{StaticResource ProblemGlyph}" Margin="4,0,0,0"
+                     Visibility="{Binding HasProblems, Converter={StaticResource Visible}}"
+                     ToolTip="This phrase has a trigger problem" />
       </Grid>
     </DataTemplate>
 
@@ -90,6 +107,7 @@
     <KeyBinding Key="N" Modifiers="Control" Command="{Binding NewPhraseCommand}" />
     <KeyBinding Key="N" Modifiers="Control+Shift" Command="{Binding NewFolderCommand}" />
     <KeyBinding Key="D" Modifiers="Control" Command="{Binding DuplicateCommand}" />
+    <KeyBinding Key="M" Modifiers="Control+Shift" Command="{Binding MoveToFolderCommand}" />
     <KeyBinding Key="P" Modifiers="Control+Shift" Command="{Binding TogglePauseCommand}" />
   </Window.InputBindings>
 
@@ -101,13 +119,36 @@
       <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
 
-    <!-- Banner (for example: library restored from a backup) -->
-    <Border Margin="12,12,12,0" Padding="16,10" CornerRadius="10"
-            Background="{DynamicResource Velotext.Raised}" BorderBrush="{DynamicResource Velotext.Warn}" BorderThickness="1"
+    <!-- Banner: a damaged library file, or saving that does not work -->
+    <Border Margin="12,12,12,0" Padding="16,8" CornerRadius="10" BorderThickness="1"
+            Background="{DynamicResource Velotext.Raised}"
             Visibility="{Binding Banner, Converter={StaticResource VisibleWhenSet}}">
+      <Border.Style>
+        <Style TargetType="Border">
+          <Setter Property="BorderBrush" Value="{DynamicResource Velotext.Warn}" />
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding IsBannerError}" Value="True">
+              <Setter Property="BorderBrush" Value="{DynamicResource Velotext.Err}" />
+            </DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Border.Style>
       <DockPanel>
-        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE7BA;" Foreground="{DynamicResource Velotext.Warn}" Margin="0,0,12,0" />
-        <Button DockPanel.Dock="Right" Content="Close" Command="{Binding DismissBannerCommand}" />
+        <views:Glyph Margin="0,0,12,0">
+          <views:Glyph.Style>
+            <Style TargetType="views:Glyph" BasedOn="{StaticResource Velotext.Icon}">
+              <Setter Property="Text" Value="&#xE7BA;" />
+              <Setter Property="Foreground" Value="{DynamicResource Velotext.Warn}" />
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBannerError}" Value="True">
+                  <Setter Property="Text" Value="&#xEA39;" />
+                  <Setter Property="Foreground" Value="{DynamicResource Velotext.Err}" />
+                </DataTrigger>
+              </Style.Triggers>
+            </Style>
+          </views:Glyph.Style>
+        </views:Glyph>
+        <Button DockPanel.Dock="Right" Content="Close message" Command="{Binding DismissBannerCommand}" />
         <TextBlock Text="{Binding Banner}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0" />
       </DockPanel>
     </Border>
@@ -115,7 +156,7 @@
     <!-- Toolbar -->
     <DockPanel Grid.Row="1" Margin="12,8,12,8" LastChildFill="False">
       <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
-        <Button Style="{StaticResource AccentButtonStyle}" AutomationProperties.Name="New phrase" Command="{Binding NewPhraseCommand}" Padding="12,6" MinHeight="32" Margin="0,0,8,0"
+        <Button Style="{StaticResource AccentButtonStyle}" AutomationProperties.Name="New phrase" Command="{Binding NewPhraseCommand}" Padding="12,4" MinHeight="32" Margin="0,0,8,0"
                 ToolTip="New phrase (Ctrl+N)">
           <StackPanel Orientation="Horizontal">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE710;" FontSize="14" Margin="0,0,8,0" />
@@ -128,26 +169,26 @@
             <TextBlock Text="New folder" />
           </StackPanel>
         </Button>
-        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Duplicate" Command="{Binding DuplicateCommand}" ToolTip="Duplicate the phrase (Ctrl+D)">
+        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Duplicate phrase" Command="{Binding DuplicateCommand}" ToolTip="Duplicate the phrase without its triggers (Ctrl+D)">
           <StackPanel Orientation="Horizontal">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE8C8;" FontSize="14" Margin="0,0,8,0" />
             <TextBlock Text="Duplicate" />
           </StackPanel>
         </Button>
-        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Delete" Command="{Binding DeleteCommand}" ToolTip="Delete (Del)">
+        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Delete" Command="{Binding DeleteCommand}" ToolTip="Delete the selected phrase or folder (Del)">
           <StackPanel Orientation="Horizontal">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE74D;" FontSize="14" Margin="0,0,8,0" />
             <TextBlock Text="Delete" />
           </StackPanel>
         </Button>
-        <Rectangle Width="1" Margin="8,6" Fill="{DynamicResource Velotext.StrokeSubtle}" />
-        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Import" Command="{Binding ImportCommand}" ToolTip="Import phrases from a Velotext file">
+        <Rectangle Width="1" Margin="8,4" Fill="{DynamicResource Velotext.StrokeSubtle}" />
+        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Import phrases" Command="{Binding ImportCommand}" ToolTip="Import phrases from a Velotext file">
           <StackPanel Orientation="Horizontal">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE896;" FontSize="14" Margin="0,0,8,0" />
             <TextBlock Text="Import" />
           </StackPanel>
         </Button>
-        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Export" Command="{Binding ExportCommand}" ToolTip="Export the selected folder or phrase to a file">
+        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Export phrases" Command="{Binding ExportCommand}" ToolTip="Export the selected folder or phrase to a Velotext file">
           <StackPanel Orientation="Horizontal">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE898;" FontSize="14" Margin="0,0,8,0" />
             <TextBlock Text="Export" />
@@ -156,25 +197,25 @@
       </StackPanel>
 
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-        <Grid Width="260" Margin="0,0,8,0">
-          <TextBox x:Name="SearchBox" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Padding="34,6,32,6"
+        <Grid Width="240" Margin="0,0,8,0">
+          <TextBox x:Name="SearchBox" Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}" Padding="32,4,32,4"
                    AutomationProperties.Name="Search phrases" ToolTip="Search phrases (Ctrl+F)" KeyDown="OnSearchKeyDown" />
           <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE721;" FontSize="14" Margin="12,0,0,0" HorizontalAlignment="Left"
-                     Foreground="{DynamicResource TextFillColorTertiaryBrush}" IsHitTestVisible="False" />
-          <TextBlock Text="Search" Margin="34,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" IsHitTestVisible="False" />
+          <TextBlock Text="Search" Margin="32,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False"
                      Foreground="{DynamicResource TextFillColorTertiaryBrush}"
                      Visibility="{Binding SearchText, Converter={StaticResource VisibleWhenNull}}" />
-          <Button Style="{StaticResource Velotext.IconButton}" HorizontalAlignment="Right" Width="28" Height="28" Margin="0,0,2,0"
-                  Command="{Binding ClearSearchCommand}" AutomationProperties.Name="Clear search" ToolTip="Clear search"
+          <Button Style="{StaticResource Velotext.IconButton}" HorizontalAlignment="Right" Width="28" Height="28" Margin="0,0,4,0"
+                  Command="{Binding ClearSearchCommand}" AutomationProperties.Name="Clear search" ToolTip="Clear search (Esc)"
                   Visibility="{Binding SearchText, Converter={StaticResource VisibleWhenSet}}">
             <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE711;" FontSize="12" />
           </Button>
         </Grid>
-        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="Pause or resume expansion" Command="{Binding TogglePauseCommand}" ToolTip="Pause or resume expansion (Ctrl+Shift+P)">
+        <Button Style="{StaticResource Velotext.ToolbarButton}" AutomationProperties.Name="{Binding PauseButtonText}" Command="{Binding TogglePauseCommand}" ToolTip="Pause or resume expansion (Ctrl+Shift+P)">
           <StackPanel Orientation="Horizontal">
-            <TextBlock x:Name="PauseIcon" Style="{StaticResource Velotext.Icon}" FontSize="14" Margin="0,0,8,0">
-              <TextBlock.Resources>
-                <Style TargetType="TextBlock" BasedOn="{StaticResource Velotext.Icon}">
+            <views:Glyph FontSize="14" Margin="0,0,8,0">
+              <views:Glyph.Style>
+                <Style TargetType="views:Glyph" BasedOn="{StaticResource Velotext.Icon}">
                   <Setter Property="Text" Value="&#xE769;" />
                   <Style.Triggers>
                     <DataTrigger Binding="{Binding IsPaused}" Value="True">
@@ -182,8 +223,8 @@
                     </DataTrigger>
                   </Style.Triggers>
                 </Style>
-              </TextBlock.Resources>
-            </TextBlock>
+              </views:Glyph.Style>
+            </views:Glyph>
             <TextBlock Text="{Binding PauseButtonText}" />
           </StackPanel>
         </Button>
@@ -206,21 +247,23 @@
           <TreeView x:Name="Tree"
                     ItemsSource="{Binding TreeRoots}"
                     Background="Transparent" BorderThickness="0"
-                    AutomationProperties.Name="Folders and phrases"
+                    AutomationProperties.Name="Phrase library"
                     VirtualizingPanel.IsVirtualizing="True"
                     SelectedItemChanged="OnTreeSelectionChanged"
                     KeyDown="OnTreeKeyDown"
                     AllowDrop="True"
                     PreviewMouseLeftButtonDown="OnTreeMouseDown"
+                    PreviewMouseRightButtonDown="OnTreeRightMouseDown"
                     PreviewMouseMove="OnTreeMouseMove"
                     DragOver="OnTreeDragOver"
+                    DragLeave="OnTreeDragLeave"
                     Drop="OnTreeDrop">
             <TreeView.ItemContainerStyle>
               <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
                 <Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}" />
                 <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
                 <Setter Property="Visibility" Value="{Binding IsVisible, Converter={StaticResource Visible}}" />
-                <Setter Property="AutomationProperties.Name" Value="{Binding DisplayName}" />
+                <Setter Property="AutomationProperties.Name" Value="{Binding AccessibleName}" />
               </Style>
             </TreeView.ItemContainerStyle>
             <TreeView.ContextMenu>
@@ -229,18 +272,20 @@
                 <MenuItem Header="New folder" Command="{Binding NewFolderCommand}" InputGestureText="Ctrl+Shift+N" />
                 <Separator />
                 <MenuItem Header="Rename" Command="{Binding RenameCommand}" InputGestureText="F2" />
-                <MenuItem Header="Duplicate" Command="{Binding DuplicateCommand}" InputGestureText="Ctrl+D" />
+                <MenuItem Header="Duplicate phrase" Command="{Binding DuplicateCommand}" InputGestureText="Ctrl+D" />
+                <MenuItem Header="Move to folder" Command="{Binding MoveToFolderCommand}" InputGestureText="Ctrl+Shift+M" />
                 <MenuItem Header="Move up" Command="{Binding MoveUpCommand}" InputGestureText="Alt+Up" />
                 <MenuItem Header="Move down" Command="{Binding MoveDownCommand}" InputGestureText="Alt+Down" />
                 <Separator />
-                <MenuItem Header="Export" Command="{Binding ExportCommand}" />
+                <MenuItem Header="Export phrases" Command="{Binding ExportCommand}" />
                 <MenuItem Header="Delete" Command="{Binding DeleteCommand}" InputGestureText="Del" />
               </ContextMenu>
             </TreeView.ContextMenu>
           </TreeView>
-          <TextBlock Text="No phrases match your search." Margin="16" HorizontalAlignment="Center" VerticalAlignment="Top"
-                     Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap"
-                     Visibility="{Binding HasNoMatches, Converter={StaticResource Visible}}" />
+          <StackPanel Margin="16" VerticalAlignment="Top" Visibility="{Binding HasNoMatches, Converter={StaticResource Visible}}">
+            <TextBlock Text="{Binding NoMatchesText}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+            <Button Content="Clear search" Command="{Binding ClearSearchCommand}" HorizontalAlignment="Left" Margin="0,12,0,0" />
+          </StackPanel>
         </Grid>
       </Border>
 
@@ -254,12 +299,12 @@
                       Visibility="{Binding EditorPhrase, Converter={StaticResource VisibleWhenNull}}">
             <TextBlock Text="{Binding EmptyEditorTitle}" FontSize="{StaticResource Velotext.TitleSize}" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap" />
             <TextBlock Text="{Binding EmptyEditorMessage}" Margin="0,8,0,16" TextAlignment="Center" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-            <Button Style="{StaticResource AccentButtonStyle}" Content="New phrase" HorizontalAlignment="Center" Padding="16,6" Command="{Binding NewPhraseCommand}" />
+            <Button Content="New phrase" HorizontalAlignment="Center" Padding="16,4" Command="{Binding NewPhraseCommand}" />
           </StackPanel>
 
           <!-- Phrase editor: fills the panel, and scrolls when the window is too short -->
           <ScrollViewer x:Name="EditorScroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsTabStop="False"
-                        Padding="24,20,24,16"
+                        Padding="24,16,24,16"
                         Visibility="{Binding EditorPhrase, Converter={StaticResource VisibleWhenSet}}">
           <Grid DataContext="{Binding EditorPhrase}" MinHeight="520"
                 Height="{Binding ViewportHeight, ElementName=EditorScroller}">
@@ -274,19 +319,19 @@
 
             <TextBlock Style="{StaticResource Velotext.SectionLabel}" Text="Name" />
             <TextBox x:Name="NameBox" Grid.Row="1" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
-                     FontSize="{StaticResource Velotext.SubtitleSize}" FontWeight="SemiBold" Padding="10,6"
+                     FontSize="{StaticResource Velotext.SubtitleSize}" FontWeight="SemiBold" Padding="12,4"
                      AutomationProperties.Name="Phrase name" />
 
-            <TextBlock Grid.Row="2" Style="{StaticResource Velotext.SectionLabel}" Text="Text" Margin="0,20,0,8" />
+            <TextBlock Grid.Row="2" Style="{StaticResource Velotext.SectionLabel}" Text="Text" Margin="0,24,0,8" />
             <editing:RichTextEditor x:Name="ContentEditor" Grid.Row="3"
                                     Phrase="{Binding}"
                                     EditorFontFamily="{Binding DataContext.EditorFontName, RelativeSource={RelativeSource AncestorType=Window}}"
                                     EditorFontSize="{Binding DataContext.EditorFontSize, RelativeSource={RelativeSource AncestorType=Window}}" />
 
             <!-- Triggers -->
-            <StackPanel Grid.Row="4" Margin="0,20,0,0">
+            <StackPanel Grid.Row="4" Margin="0,24,0,0">
               <TextBlock Style="{StaticResource Velotext.SectionLabel}" Text="Triggers" />
-              <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+              <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto" IsTabStop="False">
                 <ItemsControl ItemsSource="{Binding Triggers}" IsTabStop="False">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="{x:Type vm:TriggerViewModel}">
@@ -302,11 +347,11 @@
                             <ComboBoxItem Content="Typed text" />
                             <ComboBoxItem Content="Hotkey" />
                           </ComboBox>
-                          <TextBox Grid.Column="1" Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Padding="10,6"
+                          <TextBox Grid.Column="1" Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}" Padding="12,4"
                                    FontFamily="Cascadia Mono, Consolas"
                                    AutomationProperties.Name="Trigger text"
                                    Visibility="{Binding IsTypedText, Converter={StaticResource Visible}}" />
-                          <editing:HotkeyBox Grid.Column="1" Gesture="{Binding Gesture}" Padding="10,6"
+                          <editing:HotkeyBox Grid.Column="1" Gesture="{Binding Gesture}" Padding="12,4"
                                              AutomationProperties.Name="Hotkey"
                                              Visibility="{Binding IsHotkey, Converter={StaticResource Visible}}" />
                           <Button Grid.Column="2" Style="{StaticResource Velotext.IconButton}" Margin="4,0,0,0"
@@ -324,28 +369,35 @@
                           <ToggleButton Style="{StaticResource Velotext.Chip}" IsChecked="{Binding WordStart}" Content="Start of word"
                                         ToolTip="Fires only when the trigger starts a word." />
                         </WrapPanel>
-                        <StackPanel Orientation="Horizontal" Margin="148,6,0,0" Visibility="{Binding HasProblem, Converter={StaticResource Visible}}">
-                          <TextBlock FontSize="12" Margin="0,1,6,0" VerticalAlignment="Top">
-                            <TextBlock.Style>
-                              <Style TargetType="TextBlock" BasedOn="{StaticResource Velotext.Icon}">
-                                <Setter Property="Text" Value="&#xE946;" />
-                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
+                        <StackPanel Orientation="Horizontal" Margin="148,8,0,0" Visibility="{Binding HasProblem, Converter={StaticResource Visible}}">
+                          <views:Glyph FontSize="12" Margin="0,0,8,0" VerticalAlignment="Top">
+                            <views:Glyph.Style>
+                              <Style TargetType="views:Glyph" BasedOn="{StaticResource Velotext.Icon}">
+                                <Setter Property="Text" Value="&#xE7BA;" />
+                                <Setter Property="Foreground" Value="{DynamicResource Velotext.Warn}" />
                                 <Style.Triggers>
                                   <DataTrigger Binding="{Binding IsError}" Value="True">
                                     <Setter Property="Text" Value="&#xEA39;" />
                                     <Setter Property="Foreground" Value="{DynamicResource Velotext.Err}" />
                                   </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsEmpty}" Value="True">
+                                    <Setter Property="Text" Value="&#xE946;" />
+                                    <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
+                                  </DataTrigger>
                                 </Style.Triggers>
                               </Style>
-                            </TextBlock.Style>
-                          </TextBlock>
+                            </views:Glyph.Style>
+                          </views:Glyph>
                           <TextBlock Text="{Binding Problem}" TextWrapping="Wrap" MaxWidth="560" FontSize="{StaticResource Velotext.CaptionSize}">
                             <TextBlock.Style>
                               <Style TargetType="TextBlock">
-                                <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <Setter Property="Foreground" Value="{DynamicResource Velotext.Warn}" />
                                 <Style.Triggers>
                                   <DataTrigger Binding="{Binding IsError}" Value="True">
                                     <Setter Property="Foreground" Value="{DynamicResource Velotext.Err}" />
+                                  </DataTrigger>
+                                  <DataTrigger Binding="{Binding IsEmpty}" Value="True">
+                                    <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
                                   </DataTrigger>
                                 </Style.Triggers>
                               </Style>
@@ -373,7 +425,7 @@
               </StackPanel>
             </StackPanel>
 
-            <!-- Output target -->
+            <!-- Where the phrase is inserted -->
             <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="0,16,0,0">
               <TextBlock Text="Insert into" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
               <ComboBox Width="220" SelectedIndex="{Binding Output, Converter={StaticResource EnumIndex}}" AutomationProperties.Name="Insert into">
@@ -403,18 +455,22 @@
           </Ellipse.Style>
         </Ellipse>
         <TextBlock Text="{Binding ExpansionStatus}" VerticalAlignment="Center" FontSize="{StaticResource Velotext.CaptionSize}" />
-        <TextBlock Text="{Binding PhraseCountText}" Margin="20,0,0,0" VerticalAlignment="Center" FontSize="{StaticResource Velotext.CaptionSize}"
+        <TextBlock Text="{Binding PhraseCountText}" Margin="24,0,0,0" VerticalAlignment="Center" FontSize="{StaticResource Velotext.CaptionSize}"
                    Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-        <Button Margin="16,0,0,0" Padding="8,2" AutomationProperties.Name="Show the next trigger problem" Command="{Binding ShowNextProblemCommand}" Style="{StaticResource Velotext.ToolbarButton}"
+        <Button Margin="16,0,0,0" Padding="8,0" AutomationProperties.Name="{Binding ProblemButtonName}" Command="{Binding ShowNextProblemCommand}" Style="{StaticResource Velotext.ToolbarButton}"
                 Visibility="{Binding ProblemCountText, Converter={StaticResource VisibleWhenSet}}" ToolTip="Show the next phrase with a trigger problem">
           <StackPanel Orientation="Horizontal">
-            <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE7BA;" FontSize="12" Foreground="{DynamicResource Velotext.Warn}" Margin="0,0,6,0" />
+            <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE7BA;" FontSize="12" Foreground="{DynamicResource Velotext.Warn}" Margin="0,0,8,0" />
             <TextBlock Text="{Binding ProblemCountText}" FontSize="{StaticResource Velotext.CaptionSize}" />
           </StackPanel>
         </Button>
       </StackPanel>
-      <TextBlock DockPanel.Dock="Right" Text="{Binding SaveStatus}" VerticalAlignment="Center" FontSize="{StaticResource Velotext.CaptionSize}"
-                 Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xEA39;" FontSize="12" Foreground="{DynamicResource Velotext.Err}" Margin="0,0,8,0"
+                     Visibility="{Binding IsSaveFailed, Converter={StaticResource Visible}}" />
+        <TextBlock Text="{Binding SaveStatus}" VerticalAlignment="Center" FontSize="{StaticResource Velotext.CaptionSize}"
+                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+      </StackPanel>
     </DockPanel>
   </Grid>
 </Window>

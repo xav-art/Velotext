@@ -111,9 +111,9 @@ public static class TriggerValidator
                 var owner = descriptions[earlier.Phrase.Id];
                 issues.Add(overlap == TriggerOverlap.Full
                     ? new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Error,
-                        string.Create(CultureInfo.InvariantCulture, $"\"{earlier.Trigger.Text}\" is already used by \"{owner}\". Only that one fires."))
+                        string.Create(CultureInfo.InvariantCulture, $"\"{owner}\" already uses \"{earlier.Trigger.Text}\". Change this trigger."))
                     : new TriggerIssue(usable[i].Phrase.Id, usable[i].Position, IssueSeverity.Warning,
-                        string.Create(CultureInfo.InvariantCulture, $"Typing exactly \"{earlier.Trigger.Text}\" inserts \"{owner}\" instead.")));
+                        string.Create(CultureInfo.InvariantCulture, $"If you type \"{earlier.Trigger.Text}\" exactly, Velotext inserts \"{owner}\". Turn on Match case or change this trigger.")));
                 break;
             }
         }
@@ -134,7 +134,7 @@ public static class TriggerValidator
                     item.Phrase.Id,
                     item.Position,
                     IssueSeverity.Error,
-                    string.Create(CultureInfo.InvariantCulture, $"Never fires: \"{blocker.Trigger.Text}\" (\"{descriptions[blocker.PhraseId]}\") fires first while you type it.")));
+                    string.Create(CultureInfo.InvariantCulture, $"This trigger does not fire. \"{blocker.Trigger.Text}\" inserts \"{descriptions[blocker.PhraseId]}\" before you finish typing it. Change one of the 2 triggers.")));
             }
         }
     }
@@ -162,7 +162,7 @@ public static class TriggerValidator
                         item.Phrase.Id,
                         item.Position,
                         IssueSeverity.Error,
-                        string.Create(CultureInfo.InvariantCulture, $"{item.Trigger.Gesture} is already used by \"{descriptions[hotkeys[j].Phrase.Id]}\". Only that one fires.")));
+                        string.Create(CultureInfo.InvariantCulture, $"\"{descriptions[hotkeys[j].Phrase.Id]}\" already uses {item.Trigger.Gesture}. Choose a different hotkey.")));
                     break;
                 }
             }
@@ -183,7 +183,17 @@ public static class TriggerValidator
             return string.Create(CultureInfo.InvariantCulture, $"Use {AutotextTrigger.MaxLength} characters or fewer.");
         }
 
-        return text.Any(char.IsControl) ? "Remove line breaks and tabs from the trigger." : null;
+        if (text.Any(char.IsControl))
+        {
+            return "Remove line breaks and tabs from the trigger.";
+        }
+
+        if (text.Length < 2)
+        {
+            return "Use at least 2 characters, so the trigger does not fire by accident.";
+        }
+
+        return text.Any(Matching.CharClass.IsWordChar) ? null : "Add a letter or a digit, so the trigger does not fire in normal typing.";
     }
 
     /// <summary>

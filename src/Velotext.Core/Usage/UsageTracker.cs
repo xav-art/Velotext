@@ -1,4 +1,4 @@
-// Velotext: tracks when each phrase was last inserted, for the "Last used" folder.
+// Velotext: tracks when each phrase was last inserted, for the "Recently used" folder.
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 namespace Velotext.Core.Usage;

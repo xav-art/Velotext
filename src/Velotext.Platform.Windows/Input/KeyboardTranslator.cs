@@ -11,7 +11,9 @@ namespace Velotext.Platform.Windows.Input;
 /// <c>ToUnicodeEx</c> with the "do not change keyboard state" flag, so dead keys (^, `, ¨ on French
 /// and German layouts) keep working in the target application. Shortcuts (Ctrl, Alt or Win with a
 /// key) and navigation keys report <see cref="KeyMeaningKind.Reset"/>; AltGr characters such as @ and €
-/// are text. Runs on the keyboard hook thread.
+/// are text. Because the dead key is not stored in the keyboard state, the translator composes it with
+/// the next character itself (^ then e gives ê), as the target application does. Runs on the keyboard
+/// hook thread.
 /// </summary>
 internal sealed unsafe class KeyboardTranslator : IKeyTranslator
 {
@@ -25,7 +27,10 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
     private const int VkPacket = 0xE7;
     private const uint DoNotChangeKeyboardState = 0x4;
 
+    private static readonly string[] s_ascii = [.. Enumerable.Range(0, 128).Select(i => ((char)i).ToString())];
+
     private readonly byte[] _state = new byte[256];
+    private char _pendingDeadKey;
 
     /// <inheritdoc />
     public KeyMeaning Translate(in KeyStroke key)
@@ -35,13 +40,72 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
         // Text sent by on-screen keyboards and other tools arrives as VK_PACKET with the character in the scan code.
         if (vk == VkPacket)
         {
-            return KeyMeaning.ForText(((char)key.ScanCode).ToString());
+            var packet = (char)key.ScanCode;
+            return KeyMeaning.ForText(packet < 128 ? s_ascii[packet] : packet.ToString());
         }
 
         if (IsModifierOrLock(vk))
         {
             return KeyMeaning.Modifier;
         }
+
+        var meaning = TranslateKey(key, vk);
+        if (meaning.Kind == KeyMeaningKind.DeadKey)
+        {
+            return meaning;
+        }
+
+        var dead = _pendingDeadKey;
+        _pendingDeadKey = '\0';
+        return dead != '\0' && meaning is { Kind: KeyMeaningKind.Text, Text: { } text } ? KeyMeaning.ForText(Compose(dead, text)) : meaning;
+    }
+
+    /// <summary>
+    /// Combines a dead key with the next typed text the way Windows does: a composed letter when one
+    /// exists (^ and e give ê), the accent alone after a space, and both characters otherwise.
+    /// </summary>
+    /// <param name="deadKey">The spacing form of the dead key, as reported by the layout.</param>
+    /// <param name="text">The text of the next key.</param>
+    internal static string Compose(char deadKey, string text)
+    {
+        if (text == " ")
+        {
+            return deadKey.ToString();
+        }
+
+        var combining = CombiningMark(deadKey);
+        if (text.Length == 1 && combining != '\0')
+        {
+            var composed = string.Concat(text, combining.ToString()).Normalize(System.Text.NormalizationForm.FormC);
+            if (composed.Length == 1)
+            {
+                return composed;
+            }
+        }
+
+        return deadKey + text;
+    }
+
+    private static char CombiningMark(char deadKey) => deadKey switch
+    {
+        '`' => '\u0300',
+        '\'' or '\u00B4' => '\u0301',
+        '^' or '\u02C6' => '\u0302',
+        '~' or '\u02DC' => '\u0303',
+        '\u00AF' => '\u0304',
+        '\u02D8' => '\u0306',
+        '\u02D9' => '\u0307',
+        '"' or '\u00A8' => '\u0308',
+        '\u00B0' or '\u02DA' => '\u030A',
+        '\u02DD' => '\u030B',
+        '\u02C7' => '\u030C',
+        '\u00B8' => '\u0327',
+        '\u02DB' => '\u0328',
+        _ => '\0',
+    };
+
+    private KeyMeaning TranslateKey(in KeyStroke key, int vk)
+    {
 
         var ctrl = IsDown(VkControl);
         var alt = IsDown(VkMenu);
@@ -96,6 +160,7 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
 
         if (count < 0)
         {
+            _pendingDeadKey = buffer[0];
             return KeyMeaning.DeadKey;
         }
 
@@ -104,16 +169,16 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
             return ctrl ? KeyMeaning.Reset : KeyMeaning.Ignore;
         }
 
-        var text = new string(buffer, 0, count);
-        foreach (var c in text)
+        for (var i = 0; i < count; i++)
         {
-            if (c < ' ' && c != '\r' && c != '\t')
+            if (buffer[i] < ' ' && buffer[i] != '\r' && buffer[i] != '\t')
             {
                 return KeyMeaning.Reset;
             }
         }
 
-        return KeyMeaning.ForText(text);
+        // Common characters reuse a cached string, so typing does not leave a trail of strings in memory.
+        return KeyMeaning.ForText(count == 1 && buffer[0] < 128 ? s_ascii[buffer[0]] : new string(buffer, 0, count));
     }
 
     /// <summary>Returns whether a key moves the caret, runs a command or does nothing to the text.</summary>

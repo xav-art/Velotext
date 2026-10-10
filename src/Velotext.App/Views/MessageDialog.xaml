@@ -1,13 +1,15 @@
-<!-- Velotext: a small modal dialog: title, message, optional text field and one or two buttons. -->
+<!-- Velotext: a small modal dialog: title, message, optional details, text field or list, and one or two buttons. -->
 <Window x:Class="Velotext.App.Views.MessageDialog"
         Background="{DynamicResource Velotext.Bg}"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Width="440"
+        Width="460"
         SizeToContent="Height"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
+        FontFamily="{StaticResource Velotext.UiFont}"
+        FontSize="{StaticResource Velotext.BodySize}"
         Title="Velotext">
   <Grid Margin="24,20,24,20">
     <Grid.RowDefinitions>
@@ -15,11 +17,22 @@
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
     </Grid.RowDefinitions>
     <TextBlock x:Name="TitleText" FontSize="{StaticResource Velotext.SubtitleSize}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,8" />
     <TextBlock x:Name="MessageText" Grid.Row="1" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-    <TextBox x:Name="InputBox" Grid.Row="2" Margin="0,16,0,0" Visibility="Collapsed" />
-    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
+    <Border x:Name="DetailsPanel" Grid.Row="2" Margin="0,16,0,0" Padding="12,8" CornerRadius="6" Visibility="Collapsed"
+            Background="{DynamicResource Velotext.Surface}" BorderBrush="{DynamicResource Velotext.StrokeSubtle}" BorderThickness="1">
+      <ScrollViewer MaxHeight="260" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="True"
+                    AutomationProperties.Name="Details">
+        <TextBlock x:Name="DetailsText" TextWrapping="Wrap" />
+      </ScrollViewer>
+    </Border>
+    <TextBox x:Name="InputBox" Grid.Row="3" Margin="0,16,0,0" Padding="12,4" Visibility="Collapsed" />
+    <ListBox x:Name="ChoiceList" Grid.Row="4" Margin="0,16,0,0" MaxHeight="280" Visibility="Collapsed"
+             MouseDoubleClick="OnChoiceDoubleClick" />
+    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,24,0,0">
       <Button x:Name="ConfirmButton" MinWidth="96" Margin="0,0,8,0" IsDefault="True" Click="OnConfirm" Style="{StaticResource AccentButtonStyle}" />
       <Button x:Name="CancelButton" MinWidth="96" IsCancel="True" Content="Cancel" Click="OnCancel" />
     </StackPanel>

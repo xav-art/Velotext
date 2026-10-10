@@ -1,4 +1,4 @@
-<!-- Velotext: warm light palette. Defines Velotext tokens and overrides the Fluent theme's neutral brushes (see docs DESIGN). -->
+<!-- Velotext: warm light palette. Defines Velotext tokens and overrides the Fluent theme's neutral brushes: warm neutrals tinted toward orange, the Windows accent for highlights, text contrast of 4.5:1 or more. -->
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Color x:Key="Velotext.BgColor">#F7F4F0</Color>

@@ -21,8 +21,8 @@ public sealed class EditingTests
     {
         Blocks =
         [
-            new Paragraph { Inlines = [new TextRun { Text = "Nous pouvons " }, new TextRun { Text = "deux", Style = TextStyle.Bold | TextStyle.Underline }, new TextRun { Text = " solutions", Style = TextStyle.Italic | TextStyle.Strikethrough }] },
-            new ListBlock { Kind = ListKind.Bullet, Items = [ListItem.FromText("Remboursement immédiat"), new ListItem { Blocks = [Paragraph.FromText("Renvoi"), new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("un")] }] }] },
+            new Paragraph { Inlines = [new TextRun { Text = "We offer " }, new TextRun { Text = "two", Style = TextStyle.Bold | TextStyle.Underline }, new TextRun { Text = " options", Style = TextStyle.Italic | TextStyle.Strikethrough }] },
+            new ListBlock { Kind = ListKind.Bullet, Items = [ListItem.FromText("Café voucher"), new ListItem { Blocks = [Paragraph.FromText("New parcel"), new ListBlock { Kind = ListKind.Numbered, Items = [ListItem.FromText("one")] }] }] },
             new Paragraph(),
             new Paragraph { Inlines = [new Link { Url = "https://example.com/", Runs = [new TextRun { Text = "site" }] }, LineBreak.Instance, new TextRun { Text = "fin" }] },
         ],
@@ -63,7 +63,7 @@ public sealed class EditingTests
         Assert.Equal(PlainTextRenderer.Render(s_sample).Replace("• ", string.Empty, StringComparison.Ordinal), PlainTextRenderer.Render(back).Replace("• ", string.Empty, StringComparison.Ordinal));
         Assert.Contains(back.Blocks, b => b is ListBlock);
         var first = (Paragraph)back.Blocks[0];
-        Assert.Contains(first.Inlines.OfType<TextRun>(), r => r.Text == "deux" && r.Style == (TextStyle.Bold | TextStyle.Underline));
+        Assert.Contains(first.Inlines.OfType<TextRun>(), r => r.Text == "two" && r.Style == (TextStyle.Bold | TextStyle.Underline));
         Assert.Contains(back.Blocks.OfType<Paragraph>().SelectMany(p => p.Inlines), i => i is Link { Url: "https://example.com/" });
     });
 
@@ -150,5 +150,38 @@ public sealed class EditingTests
         var back = RichTextEditor.ReadRich(data)!;
 
         Assert.StartsWith("Grüße • € æøå", PlainTextRenderer.Render(back), StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public void Deeply_nested_html_keeps_its_text_without_exhausting_the_stack()
+    {
+        // Run on a thread with a small stack: before the depth limit this overflowed and ended the process.
+        string? text = null;
+        var thread = new Thread(
+            () =>
+            {
+                var html = string.Concat(Enumerable.Repeat("<span><b>", 5000)) + "deep" + string.Concat(Enumerable.Repeat("</b></span>", 5000))
+                    + string.Concat(Enumerable.Repeat("<ul><li>", 3000)) + "list" + string.Concat(Enumerable.Repeat("</li></ul>", 3000));
+                text = PlainTextRenderer.Render(HtmlImporter.Parse(html));
+            },
+            maxStackSize: 1024 * 1024);
+        thread.Start();
+        thread.Join();
+
+        Assert.NotNull(text);
+        Assert.Contains("deep", text, StringComparison.Ordinal);
+        Assert.Contains("list", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Clipboard_without_rich_formats_pastes_its_text_only() => WpfThread.Run(() =>
+    {
+        var data = new DataObject();
+        data.SetData(DataFormats.Xaml, "<Section xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"><Paragraph>x</Paragraph></Section>");
+        data.SetData(DataFormats.UnicodeText, "only text");
+
+        Assert.Null(RichTextEditor.ReadRich(data));
+        Assert.Equal("only text", RichTextEditor.ReadPlain(data));
+        Assert.Null(RichTextEditor.ReadPlain(new DataObject(DataFormats.Xaml, "<Section />")));
     });
 }
