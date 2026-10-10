@@ -18,6 +18,15 @@ internal sealed class TargetApp
     public bool ExpectsFormatting { get; init; } = true;
 
     public int SettleMilliseconds { get; init; } = 1500;
+
+    /// <summary>Reads the document's HTML directly from the app, when copying it to the clipboard is not reliable.</summary>
+    public Func<string>? ReadHtml { get; init; }
+
+    /// <summary>
+    /// Puts the cursor where the test types, after the window is in front. Returns <c>null</c> on success,
+    /// or why the cursor is not there, and then nothing is typed.
+    /// </summary>
+    public Func<nint, string?>? Focus { get; init; }
 }
 
 /// <summary>Runs the standard checks against one application.</summary>
@@ -25,29 +34,40 @@ internal static class Scenarios
 {
     private static readonly uint s_htmlFormat = Native.RegisterClipboardFormatW("HTML Format");
 
-    public static List<CheckResult> Run(TargetApp app, Typist typist, CancellationToken abort)
+    /// <summary>Folder where failing checks save what they read (the HTML of a formatting check), for diagnosis.</summary>
+    public static string? ArtifactFolder { get; set; }
+
+    /// <summary>
+    /// Opens the app before the input guard starts, because guided apps need the user's click. Returns 0
+    /// when the app could not open or the user skipped it (the result says which).
+    /// </summary>
+    public static nint Open(TargetApp app, List<CheckResult> results)
     {
-        var results = new List<CheckResult>();
-        nint window;
         try
         {
-            window = app.Open();
+            var window = app.Open();
+            if (window == 0)
+            {
+                results.Add(new CheckResult(app.Name, "Skipped by the user", true, string.Empty));
+            }
+
+            return window;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             results.Add(new CheckResult(app.Name, "Open", false, ex.Message));
-            return results;
+            return 0;
         }
+    }
 
-        if (window == 0)
-        {
-            results.Add(new CheckResult(app.Name, "Skipped by the user", true, string.Empty));
-            return results;
-        }
-
+    public static List<CheckResult> Run(TargetApp app, nint window, Typist typist, bool closeAfter, CancellationToken abort)
+    {
+        var results = new List<CheckResult>();
         try
         {
-            void Check(string name, bool passed, string detail) => results.Add(new CheckResult(app.Name, name, passed, passed ? string.Empty : detail));
+            // A failed check also records where keyboard focus was, to tell app behaviour from Velotext's.
+            void Check(string name, bool passed, string detail) =>
+                results.Add(new CheckResult(app.Name, name, passed, passed ? string.Empty : $"{detail} [{Native.DescribeFocus()}]"));
 
             void Prepare()
             {
@@ -57,20 +77,42 @@ internal static class Scenarios
                     throw new InvalidOperationException("The test window could not be brought to the front.");
                 }
 
+                if (app.Focus?.Invoke(window) is { } problem)
+                {
+                    throw new InvalidOperationException(problem);
+                }
+
                 typist.Chord(Typist.VkControl, 0x41);
                 typist.Press(0x2E);
                 Thread.Sleep(300);
+                Native.WaitResponsive(window);
             }
 
             (string Text, string Html) Read()
             {
+                // The app may still be busy with the paste; read only once it handles messages again.
+                Native.WaitResponsive(window);
                 typist.Chord(Typist.VkControl, 0x41);
                 typist.Chord(Typist.VkControl, 0x43);
                 Thread.Sleep(500);
                 var text = (Native.ReadClipboard(Native.CfUnicodeText, utf16: true) ?? string.Empty).Replace("\r\n", "\n", StringComparison.Ordinal).Trim();
-                var html = Native.ReadClipboard(s_htmlFormat, utf16: false) ?? string.Empty;
+                var html = app.ReadHtml?.Invoke() ?? Native.ReadClipboard(s_htmlFormat, utf16: false) ?? string.Empty;
                 typist.Press(0x23); // End: drop the selection so the next typing does not replace it
+                Native.WaitResponsive(window);
                 return (text, html);
+            }
+
+            // After a failed text check, read once more after a pause: a passing second read means the app
+            // was still busy with the keys; the same text again means keys or the paste never arrived.
+            string Again(bool passed)
+            {
+                if (passed)
+                {
+                    return string.Empty;
+                }
+
+                Thread.Sleep(2000);
+                return $"; 2 s later '{Read().Text}'";
             }
 
             string Sentinel()
@@ -87,17 +129,44 @@ internal static class Scenarios
             typist.Type("Start " + VelotextInstance.FormattedTrigger, window);
             Thread.Sleep(app.SettleMilliseconds);
             var clipboard = Native.ReadClipboard(Native.CfUnicodeText, utf16: true);
+            if (clipboard != sentinel)
+            {
+                // Velotext gives the clipboard back a moment after the paste; wait for the next clipboard change.
+                var sequence = Native.GetClipboardSequenceNumber();
+                var deadline = DateTime.UtcNow.AddSeconds(4);
+                while (DateTime.UtcNow < deadline && Native.GetClipboardSequenceNumber() == sequence)
+                {
+                    Thread.Sleep(50);
+                }
+
+                clipboard = Native.ReadClipboard(Native.CfUnicodeText, utf16: true);
+            }
+
             Check("Clipboard restored after paste", clipboard == sentinel, $"clipboard was '{clipboard}'");
             var (text, html) = Read();
-            Check("Formatted phrase inserted", text.Contains("Hello World", StringComparison.Ordinal) && text.Contains("second point", StringComparison.Ordinal), $"text was '{text}'");
+            var inserted = text.Contains("Hello World", StringComparison.Ordinal) && text.Contains("second point", StringComparison.Ordinal);
+            Check("Formatted phrase inserted", inserted, $"text was '{text}'{Again(inserted)}");
             Check("Trigger text removed", !text.Contains(VelotextInstance.FormattedTrigger, StringComparison.Ordinal) && text.StartsWith("Start ", StringComparison.Ordinal), $"text was '{text}'");
             if (app.ExpectsFormatting)
             {
-                var hasList = html.Contains("<li", StringComparison.OrdinalIgnoreCase) || html.Contains("mso-list", StringComparison.OrdinalIgnoreCase) || html.Contains("MsoListParagraph", StringComparison.OrdinalIgnoreCase);
-                var hasBold = html.Contains("<b>", StringComparison.OrdinalIgnoreCase) || html.Contains("<strong", StringComparison.OrdinalIgnoreCase) || html.Contains("font-weight:bold", StringComparison.OrdinalIgnoreCase) || html.Contains("font-weight:700", StringComparison.OrdinalIgnoreCase) || html.Contains("<b ", StringComparison.OrdinalIgnoreCase);
+                // Each check looks for the phrase's own markup, so a mail signature with bold text or links
+                // cannot make it pass. Word wraps its HTML source lines, so a line break can sit between words.
+                var hasList = System.Text.RegularExpressions.Regex.IsMatch(html, @"first\s+point")
+                    && (html.Contains("<li", StringComparison.OrdinalIgnoreCase) || html.Contains("mso-list", StringComparison.OrdinalIgnoreCase) || html.Contains("MsoListParagraph", StringComparison.OrdinalIgnoreCase));
+                var hasBold = System.Text.RegularExpressions.Regex.IsMatch(
+                    html,
+                    @"(<b\b[^>]*>|<strong\b[^>]*>|font-weight:\s*(bold|700)[^>]*>)(\s|<[^>]+>)*World",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                var hasLink = html.Contains("href=\"https://example.com", StringComparison.OrdinalIgnoreCase)
+                    || html.Contains("href=https://example.com", StringComparison.OrdinalIgnoreCase);
+                if (ArtifactFolder is not null && !(hasList && hasBold && hasLink))
+                {
+                    File.WriteAllText(Path.Combine(ArtifactFolder, $"{app.Name.Replace(' ', '-').Replace("(", string.Empty, StringComparison.Ordinal).Replace(")", string.Empty, StringComparison.Ordinal)}-{DateTime.Now:HHmmss}.html"), html);
+                }
+
                 Check("Bullets kept", hasList, "no list markup in the copied HTML");
                 Check("Bold kept", hasBold, "no bold markup in the copied HTML");
-                Check("Link kept", html.Contains("https://example.com", StringComparison.OrdinalIgnoreCase), "no link in the copied HTML");
+                Check("Link kept", hasLink, "no link to https://example.com in the copied HTML");
             }
 
             // 2. Delimiter trigger keeps the space, and text typed right after lands behind the phrase.
@@ -105,7 +174,8 @@ internal static class Scenarios
             typist.Type("A " + VelotextInstance.DelimiterTrigger + " tail", window);
             Thread.Sleep(app.SettleMilliseconds);
             (text, _) = Read();
-            Check("Delimiter trigger keeps the delimiter", text == "A " + VelotextInstance.PlainReply + " tail", $"text was '{text}'");
+            var kept = text == "A " + VelotextInstance.PlainReply + " tail";
+            Check("Delimiter trigger keeps the delimiter", kept, $"text was '{text}'{Again(kept)}");
 
             // 3. Typing without pauses: keys typed during the expansion are replayed in order.
             Prepare();
@@ -114,16 +184,19 @@ internal static class Scenarios
             typist.DelayMilliseconds = 30;
             Thread.Sleep(app.SettleMilliseconds);
             (text, _) = Read();
-            Check("Fast typing replayed in order", text.EndsWith(" abc", StringComparison.Ordinal) && text.Contains("Hello World", StringComparison.Ordinal) && !text.Contains(VelotextInstance.FormattedTrigger, StringComparison.Ordinal), $"text was '{text}'");
+            var inOrder = text.EndsWith(" abc", StringComparison.Ordinal) && text.Contains("Hello World", StringComparison.Ordinal) && !text.Contains(VelotextInstance.FormattedTrigger, StringComparison.Ordinal);
+            Check("Fast typing replayed in order", inOrder, $"text was '{text}'{Again(inOrder)}");
 
             // 4. Backspace right after an expansion brings the trigger back.
             Prepare();
             typist.Type("Undo " + VelotextInstance.FormattedTrigger, window);
             Thread.Sleep(app.SettleMilliseconds);
+            Native.WaitResponsive(window);
             typist.Press(Typist.VkBack);
             Thread.Sleep(app.SettleMilliseconds);
             (text, _) = Read();
-            Check("Backspace undoes the expansion", text == "Undo " + VelotextInstance.FormattedTrigger, $"text was '{text}'");
+            var undone = text == "Undo " + VelotextInstance.FormattedTrigger;
+            Check("Backspace undoes the expansion", undone, $"text was '{text}'{Again(undone)}");
 
             // 5. Clipboard output target: the trigger disappears and the phrase waits on the clipboard.
             Prepare();
@@ -141,7 +214,8 @@ internal static class Scenarios
             typist.Chord(Typist.VkControl, Typist.VkMenu, Typist.VkShift, (ushort)VelotextInstance.Hotkey.Key);
             Thread.Sleep(app.SettleMilliseconds);
             (text, _) = Read();
-            Check("Hotkey inserts the phrase", text == "Key: " + VelotextInstance.HotkeyText, $"text was '{text}'");
+            var byHotkey = text == "Key: " + VelotextInstance.HotkeyText;
+            Check("Hotkey inserts the phrase", byHotkey, $"text was '{text}'{Again(byHotkey)}");
 
             Prepare();
         }
@@ -158,7 +232,10 @@ internal static class Scenarios
         {
             try
             {
-                app.Close?.Invoke();
+                if (closeAfter)
+                {
+                    app.Close?.Invoke();
+                }
             }
             catch (Exception ex)
             {
@@ -178,6 +255,13 @@ internal static class Scenarios
         {
             Name = "Notepad",
             ExpectsFormatting = false,
+
+            // The text area must have the cursor; after a menu was opened it moves to the window's input site.
+            Focus = _ =>
+            {
+                var focus = Native.FocusClass();
+                return focus == "RichEditD2DPT" ? null : $"The cursor is in '{focus}', not in the Notepad text; nothing was typed.";
+            },
             Open = () =>
             {
                 process = Process.Start(new ProcessStartInfo("notepad.exe", $"\"{file}\"") { UseShellExecute = true });
@@ -286,6 +370,25 @@ internal static class Scenarios
         {
             Name = "Outlook (classic)",
             SettleMilliseconds = 2500,
+
+            // Copying from the mail editor does not always put HTML on the clipboard; the item's body is exact.
+            ReadHtml = () => (string)(mail?.HTMLBody ?? string.Empty),
+
+            // A new mail opens with the cursor in To:. Click into the body (window class "_WwG"), and check
+            // that the cursor really is there before anything is typed.
+            Focus = window =>
+            {
+                var body = Native.FindChild(window, "_WwG");
+                if (body == 0)
+                {
+                    return "The email body window was not found; nothing was typed.";
+                }
+
+                Native.ClickInside(body, 40, 12);
+                Thread.Sleep(400);
+                var focus = Native.FocusClass();
+                return focus == "_WwG" ? null : $"The cursor is in '{focus}', not in the email body; nothing was typed.";
+            },
             Open = () =>
             {
                 var type = Type.GetTypeFromProgID("Outlook.Application") ?? throw new InvalidOperationException("Classic Outlook is not installed.");
@@ -294,10 +397,7 @@ internal static class Scenarios
                 mail = app.CreateItem(0);
                 mail.Subject = Subject;
                 mail.Display(false);
-                var window = WaitForWindow(Subject, TimeSpan.FromSeconds(60));
-                dynamic editor = mail.GetInspector.WordEditor;
-                editor.Range(0, 0).Select();
-                return window;
+                return WaitForWindow(Subject, TimeSpan.FromSeconds(60));
             },
             Close = () =>
             {

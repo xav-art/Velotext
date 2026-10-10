@@ -91,18 +91,20 @@ public sealed class ExpansionEngineTests : IDisposable
         await Type("TWOX");
         await WaitForCompletion();
 
-        Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11"], _injector.Calls);
         var payload = Assert.Single(_clipboard.Pasted);
         Assert.NotNull(payload.Html);
         Assert.NotNull(payload.Rtf);
         Assert.Equal("• one", payload.Text);
-        Assert.Equal(1, _clipboard.Restores);
+        // The phrase stays on the clipboard for a moment after the read, then the user's clipboard comes back.
+        Assert.Equal(0, _clipboard.Restores);
+        await WaitUntil(() => _clipboard.Restores == 1);
         Assert.Equal([_formatted.Id], _host.Inserted);
 
         // Backspace right away undoes: Ctrl+Z, then the trigger is typed back.
         Assert.Equal(KeyDecision.Swallow, await Key('\b', vk: 0x08));
         await WaitForCompletion();
-        Assert.Equal(["backspace x3", "chord 11+56", "chord 11+5A", "type 'TWOX'"], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11", "chord 11+5A", "release 11", "type 'TWOX'"], _injector.Calls);
     }
 
     [Fact]
@@ -111,7 +113,7 @@ public sealed class ExpansionEngineTests : IDisposable
         await Type("brb ");
         await WaitForCompletion();
 
-        Assert.Equal(["backspace x3", "chord 11+56", "resend  "], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11", "resend  "], _injector.Calls);
         var payload = Assert.Single(_clipboard.Pasted);
         Assert.Null(payload.Html);
         Assert.Null(payload.Rtf);
@@ -245,7 +247,7 @@ public sealed class ExpansionEngineTests : IDisposable
     {
         await _engine.InsertFromHotkeyAsync(_plain.Id);
         await WaitForCompletion();
-        Assert.Equal(["chord 11+56"], _injector.Calls);
+        Assert.Equal(["chord 11+56", "release 11"], _injector.Calls);
 
         _sequencer.Enabled = false;
         await _engine.InsertFromHotkeyAsync(_plain.Id);
@@ -346,8 +348,21 @@ public sealed class ExpansionEngineTests : IDisposable
         await WaitForCompletion();
 
         // The delimiter can be Enter, which would send a chat message with unknown content.
-        Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11"], _injector.Calls);
         Assert.Equal(ExpansionNoticeKind.PasteNotConfirmed, Assert.Single(_host.Notices).Kind);
+    }
+
+    [Fact]
+    public async Task Ctrl_stays_down_until_the_wait_for_the_read_ends()
+    {
+        _clipboard.Mode = FakeClipboard.Behaviour.Ignore;
+        await Type("brb ");
+        await WaitUntil(() => _injector.Calls.Contains("chord 11+56"));
+
+        // A busy app that checks Ctrl only when it gets to the V must still see Ctrl+V.
+        Assert.DoesNotContain("release 11", _injector.Calls);
+        await WaitForCompletion();
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11"], _injector.Calls);
     }
 
     [Fact]
@@ -401,7 +416,7 @@ public sealed class ExpansionEngineTests : IDisposable
         _system.Target = new ForegroundTarget(200, 99, 98);
         await WaitForCompletion();
 
-        Assert.Equal(["backspace x3", "chord 11+56"], _injector.Calls);
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11"], _injector.Calls);
         Assert.Equal(ExpansionNoticeKind.DelimiterSkipped, Assert.Single(_host.Notices).Kind);
         Assert.Equal([_plain.Id], _host.Inserted);
     }
@@ -426,5 +441,31 @@ public sealed class ExpansionEngineTests : IDisposable
 
         _system.Target = new ForegroundTarget(200, 99, 98);
         await WaitUntil(() => _clipboard.Restores == 1);
+    }
+
+    [Fact]
+    public async Task When_another_program_reads_first_the_paste_is_assumed_after_a_short_wait()
+    {
+        _clipboard.Mode = FakeClipboard.Behaviour.OtherReaderFirst;
+        _host.Settings = _host.Settings with { PasteTimeout = TimeSpan.FromSeconds(5) };
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await Type("brb ");
+        await WaitForCompletion();
+
+        // The delimiter follows, the clipboard comes back soon after, and nothing warns the user; undo stays off.
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(3), $"Took {watch.Elapsed}.");
+        Assert.Equal(["backspace x3", "chord 11+56", "release 11", "resend  "], _injector.Calls);
+        await WaitUntil(() => _clipboard.Restores == 1);
+        Assert.Empty(_host.Notices);
+        Assert.Equal(KeyDecision.Pass, await Key('\b', vk: 0x08));
+    }
+
+    [Fact]
+    public void The_first_paste_into_an_app_keeps_the_phrase_longer_on_the_clipboard()
+    {
+        // The first paste into a process is the slowest (some apps load their HTML import then and read again).
+        Assert.Equal(TimeSpan.FromSeconds(2), _engine.RestoreHold(1234));
+        Assert.Equal(TimeSpan.FromSeconds(1), _engine.RestoreHold(1234));
+        Assert.Equal(TimeSpan.FromSeconds(2), _engine.RestoreHold(4321));
     }
 }

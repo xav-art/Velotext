@@ -39,6 +39,41 @@ internal static unsafe partial class Native
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetGUIThreadInfo(uint threadId, ref GuiThreadInfo info);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    public static partial nint SendMessageTimeoutW(nint hwnd, uint msg, nint wParam, nint lParam, uint flags, uint timeout, out nint result);
+
+    /// <summary>Waits until the window's thread handles messages again (an app can stall for a second or two), at most 10 s.</summary>
+    public static void WaitResponsive(nint hwnd)
+    {
+        const uint SmtoBlock = 0x0001;
+        const uint SmtoAbortIfHung = 0x0002;
+        SendMessageTimeoutW(hwnd, 0, 0, 0, SmtoBlock | SmtoAbortIfHung, 10_000, out _);
+    }
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int GetClassNameW(nint hwnd, [Out] char[] text, int max);
+
+    /// <summary>Which window and control have keyboard focus right now, for failure details.</summary>
+    public static string DescribeFocus()
+    {
+        var foreground = GetForegroundWindow();
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        var thread = GetWindowThreadProcessId(foreground, out _);
+        var focus = GetGUIThreadInfo(thread, ref info) ? info.Focus : 0;
+        string ClassOf(nint hwnd)
+        {
+            var buffer = new char[128];
+            var length = hwnd == 0 ? 0 : GetClassNameW(hwnd, buffer, buffer.Length);
+            return length > 0 ? new string(buffer, 0, length) : "none";
+        }
+
+        return $"foreground '{WindowTitle(foreground)}' ({ClassOf(foreground)}), focus {ClassOf(focus)}";
+    }
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool SetForegroundWindow(nint hwnd);
 
     [LibraryImport("user32.dll")]
@@ -62,6 +97,98 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool EnumWindows(EnumWindowsProc callback, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool EnumChildWindows(nint parent, EnumWindowsProc callback, nint lParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool GetWindowRect(nint hwnd, out Rect rect);
+
+    [LibraryImport("user32.dll")]
+    public static partial int GetSystemMetrics(int index);
+
+    [LibraryImport("user32.dll")]
+    public static partial uint GetClipboardSequenceNumber();
+
+    [LibraryImport("user32.dll")]
+    public static partial nint SetThreadDpiAwarenessContext(nint context);
+
+    /// <summary>Finds a visible descendant window of a class, for example the body of an Outlook mail ("_WwG").</summary>
+    public static nint FindChild(nint parent, string className)
+    {
+        nint found = 0;
+        EnumChildWindows(
+            parent,
+            (hwnd, _) =>
+            {
+                if (IsWindowVisible(hwnd) && ClassName(hwnd) == className)
+                {
+                    found = hwnd;
+                    return false;
+                }
+
+                return true;
+            },
+            0);
+        return found;
+    }
+
+    /// <summary>
+    /// Clicks inside a window, a little in from its top-left corner, with injected mouse input (the input
+    /// guard ignores injected input). Coordinates are physical pixels over the whole virtual screen.
+    /// </summary>
+    public static bool ClickInside(nint hwnd, int fromLeft, int fromTop)
+    {
+        const nint PerMonitorAwareV2 = -4;
+        const uint InputMouse = 0;
+        const uint Move = 0x0001;
+        const uint LeftDown = 0x0002;
+        const uint LeftUp = 0x0004;
+        const uint VirtualDesk = 0x4000;
+        const uint Absolute = 0x8000;
+        var previous = SetThreadDpiAwarenessContext(PerMonitorAwareV2);
+        try
+        {
+            if (!GetWindowRect(hwnd, out var rect))
+            {
+                return false;
+            }
+
+            var x = rect.Left + Math.Min(fromLeft, (rect.Right - rect.Left) / 2);
+            var y = rect.Top + Math.Min(fromTop, (rect.Bottom - rect.Top) / 2);
+            var (left, top, width, height) = (GetSystemMetrics(76), GetSystemMetrics(77), GetSystemMetrics(78), GetSystemMetrics(79));
+            var nx = (int)Math.Round((x - left) * 65535.0 / Math.Max(1, width - 1));
+            var ny = (int)Math.Round((y - top) * 65535.0 / Math.Max(1, height - 1));
+            InputRecord Mouse(uint flags) => new() { Type = InputMouse, Data = new InputUnion { Mouse = new MouseInput { X = nx, Y = ny, Flags = flags | Absolute | VirtualDesk } } };
+            InputRecord[] inputs = [Mouse(Move), Mouse(LeftDown), Mouse(LeftUp)];
+            fixed (InputRecord* pointer = inputs)
+            {
+                return SendInput((uint)inputs.Length, pointer, Marshal.SizeOf<InputRecord>()) == inputs.Length;
+            }
+        }
+        finally
+        {
+            SetThreadDpiAwarenessContext(previous);
+        }
+    }
+
+    /// <summary>The class of the window that has keyboard focus right now.</summary>
+    public static string FocusClass()
+    {
+        var foreground = GetForegroundWindow();
+        var info = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        var thread = GetWindowThreadProcessId(foreground, out _);
+        return GetGUIThreadInfo(thread, ref info) ? ClassName(info.Focus) : "none";
+    }
+
+    private static string ClassName(nint hwnd)
+    {
+        var buffer = new char[128];
+        var length = hwnd == 0 ? 0 : GetClassNameW(hwnd, buffer, buffer.Length);
+        return length > 0 ? new string(buffer, 0, length) : "none";
+    }
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -320,4 +447,32 @@ internal struct MouseHookData
     public uint Flags;
     public uint Time;
     public nuint ExtraInfo;
+}
+
+/// <summary>Focus and caret details of a GUI thread (GUITHREADINFO).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct GuiThreadInfo
+{
+    public int Size;
+    public uint Flags;
+    public nint Active;
+    public nint Focus;
+    public nint Capture;
+    public nint MenuOwner;
+    public nint MoveSize;
+    public nint Caret;
+    public int CaretLeft;
+    public int CaretTop;
+    public int CaretRight;
+    public int CaretBottom;
+}
+
+/// <summary>A window rectangle in screen coordinates (RECT).</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Rect
+{
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
 }

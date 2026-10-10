@@ -323,6 +323,7 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
             _registered = registrations;
         }
 
+        _monitor?.UpdateHotkeys(registrations.Select(r => r.Gesture));
         try
         {
             var failed = await _hotkeys.ReplaceAllAsync(registrations).ConfigureAwait(false);

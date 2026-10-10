@@ -6,7 +6,8 @@ namespace Velotext.App.Services;
 /// <summary>Options parsed from the command line.</summary>
 /// <param name="StartedByWindows">True when Windows started Velotext at sign-in (<c>--autostart</c>): start in the tray.</param>
 /// <param name="DataDirectory">Optional data folder (<c>--data-dir</c>), used for isolated test runs.</param>
-public sealed record AppOptions(bool StartedByWindows, string? DataDirectory)
+/// <param name="Verbose">True with <c>--verbose</c>: the log also records operation and clipboard timing (never typed text or phrase content), for troubleshooting.</param>
+public sealed record AppOptions(bool StartedByWindows, string? DataDirectory, bool Verbose = false)
 {
     /// <summary>Parses the command line. Unknown arguments are ignored.</summary>
     /// <param name="args">Command-line arguments.</param>
@@ -14,6 +15,7 @@ public sealed record AppOptions(bool StartedByWindows, string? DataDirectory)
     {
         ArgumentNullException.ThrowIfNull(args);
         var autostart = false;
+        var verbose = false;
         string? dataDirectory = null;
         for (var i = 0; i < args.Count; i++)
         {
@@ -25,10 +27,13 @@ public sealed record AppOptions(bool StartedByWindows, string? DataDirectory)
                 case "--DATA-DIR" when i + 1 < args.Count:
                     dataDirectory = args[++i];
                     break;
+                case "--VERBOSE":
+                    verbose = true;
+                    break;
             }
         }
 
-        return new AppOptions(autostart, dataDirectory);
+        return new AppOptions(autostart, dataDirectory, verbose);
     }
 }
 

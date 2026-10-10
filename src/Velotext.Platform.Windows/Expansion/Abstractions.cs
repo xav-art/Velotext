@@ -65,6 +65,14 @@ public interface ISystemState
     /// <summary>True when the window is a console or terminal, where Ctrl+Z does not undo (it can suspend a program).</summary>
     /// <param name="window">Window handle.</param>
     bool IsTerminal(nint window);
+
+    /// <summary>
+    /// Waits until the window's thread handles messages again, which tells that an app that pastes on its
+    /// own thread has finished pasting. Returns at once for a window that does not respond.
+    /// </summary>
+    /// <param name="window">Window handle.</param>
+    /// <param name="timeout">Longest wait.</param>
+    void WaitForWindowIdle(nint window, TimeSpan timeout);
 }
 
 /// <summary>The real system state.</summary>
@@ -84,6 +92,17 @@ public sealed class WindowsSystemState : ISystemState
 
     /// <inheritdoc />
     public nint OpenClipboardWindow() => NativeMethods.GetOpenClipboardWindow();
+
+    /// <inheritdoc />
+    public void WaitForWindowIdle(nint window, TimeSpan timeout)
+    {
+        const uint SmtoBlock = 0x0001;
+        const uint SmtoAbortIfHung = 0x0002;
+        if (window != 0)
+        {
+            NativeMethods.SendMessageTimeoutW(window, 0, 0, 0, SmtoBlock | SmtoAbortIfHung, (uint)timeout.TotalMilliseconds, out _);
+        }
+    }
 
     /// <inheritdoc />
     public unsafe bool IsTerminal(nint window)

@@ -31,8 +31,12 @@ public interface IInputInjector
     /// <summary>Sends a shortcut such as Ctrl+V.</summary>
     /// <param name="modifier">Modifier virtual key.</param>
     /// <param name="key">Main virtual key.</param>
+    /// <param name="keepModifierDown">
+    /// True to leave the modifier pressed; the caller releases it with <see cref="ReleaseKeys"/>. Some apps
+    /// check the modifier only when they get to the key, which can be later when they are busy.
+    /// </param>
     /// <returns>True when every event was accepted.</returns>
-    bool SendChord(ushort modifier, ushort key);
+    bool SendChord(ushort modifier, ushort key, bool keepModifierDown = false);
 
     /// <summary>Releases the given keys.</summary>
     /// <param name="virtualKeys">Keys to release.</param>
@@ -146,10 +150,13 @@ public sealed class InputInjector : IInputInjector
     /// <summary>Sends a shortcut such as Ctrl+V: press modifier, press key, release key, release modifier.</summary>
     /// <param name="modifier">Modifier virtual key.</param>
     /// <param name="key">Main virtual key.</param>
+    /// <param name="keepModifierDown">True to leave the modifier pressed for the caller to release.</param>
     /// <returns>True when every event was accepted.</returns>
-    public bool SendChord(ushort modifier, ushort key)
+    public bool SendChord(ushort modifier, ushort key, bool keepModifierDown = false)
     {
-        InputRecord[] inputs = [Key(modifier, up: false), Key(key, up: false), Key(key, up: true), Key(modifier, up: true)];
+        InputRecord[] inputs = keepModifierDown
+            ? [Key(modifier, up: false), Key(key, up: false), Key(key, up: true)]
+            : [Key(modifier, up: false), Key(key, up: false), Key(key, up: true), Key(modifier, up: true)];
         return Send(inputs) == inputs.Length;
     }
 
@@ -265,6 +272,26 @@ public sealed class InputInjector : IInputInjector
         // modifier is never left pressed and a key the user still holds keeps working.
         RestoreTo(inputs, ref state, physical);
         return (inputs, keyEnds);
+    }
+
+    /// <summary>
+    /// Releases Alt or Win after a hotkey with a harmless unassigned key (VK 0xE8) in front of it. Without
+    /// it, the app sees Alt or Win pressed and released alone (the hotkey's own key never reaches it), takes
+    /// that as a tap, and opens its menu bar or the Start menu.
+    /// </summary>
+    /// <param name="vk">The Alt or Win key being released.</param>
+    /// <param name="scan">Its scan code.</param>
+    /// <param name="extended">Whether it is an extended key.</param>
+    internal static void SendMaskedRelease(int vk, int scan, bool extended)
+    {
+        const int MaskKey = 0xE8;
+        InputRecord[] inputs =
+        [
+            Raw(MaskKey, 0, up: false, extended: false, InputMarkers.Own),
+            Raw(MaskKey, 0, up: true, extended: false, InputMarkers.Own),
+            Raw(vk, scan, up: true, extended, InputMarkers.Own),
+        ];
+        Send(inputs);
     }
 
     /// <summary>The modifier state Windows has right now, per side.</summary>

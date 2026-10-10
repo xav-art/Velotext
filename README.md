@@ -77,8 +77,9 @@ app formats. It does not save:
 - data that stays inside the source app (for example files copied from an Outlook attachment), and
 - any single format larger than 32 MB, or anything beyond 64 MB in total.
 
-If an app does not confirm that it read the phrase, the phrase stays on the clipboard until the app reads it, you
-switch to another window, or 10 seconds pass. Then your clipboard comes back.
+After an insertion your clipboard comes back within about 1 second (2 seconds for the first insertion into an app),
+because some apps read the clipboard a second time while they paste. If an app does not confirm that it read the
+phrase, the phrase stays on the clipboard until the app reads it, you switch to another window, or 10 seconds pass.
 
 ## Your data
 
@@ -93,6 +94,13 @@ switch to another window, or 10 seconds pass. Then your clipboard comes back.
 Every save is atomic, so a crash or power loss never leaves a half-written file. If the phrase file is ever
 damaged, Velotext loads the most recent backup and tells you. **Settings** has buttons to open these folders and
 to restore a backup.
+
+## Troubleshooting
+
+If a phrase does not arrive in an app, start Velotext with `--verbose` (for example from a shortcut:
+`Velotext.exe --verbose`). The log then also records timing: when the paste keystroke was sent, which program read
+the clipboard, and why an insertion stopped. It never records what you type or the text of your phrases. Use
+**Settings**, **Open log folder** to find the log.
 
 ## Build from source
 

@@ -27,7 +27,7 @@ internal sealed class FakeInjector : IInputInjector
         return Accept;
     }
 
-    public bool SendChord(ushort modifier, ushort key)
+    public bool SendChord(ushort modifier, ushort key, bool keepModifierDown = false)
     {
         Calls.Enqueue($"chord {modifier:X2}+{key:X2}");
         return Accept;
@@ -63,6 +63,7 @@ internal sealed class FakeClipboard : IClipboardService
         Ignore,
         Replace,
         Busy,
+        OtherReaderFirst,
     }
 
     public Behaviour Mode { get; set; } = Behaviour.Consume;
@@ -91,6 +92,10 @@ internal sealed class FakeClipboard : IClipboardService
         else if (Mode == Behaviour.Replace)
         {
             session.MarkReplaced();
+        }
+        else if (Mode == Behaviour.OtherReaderFirst)
+        {
+            session.MarkOtherReader();
         }
 
         return Task.FromResult<PasteSession?>(session);
@@ -126,6 +131,10 @@ internal sealed class FakeSystem : ISystemState
     public HashSet<nint> Terminals { get; } = [];
 
     public bool IsTerminal(nint window) => Terminals.Contains(window);
+
+    public int IdleWaits { get; private set; }
+
+    public void WaitForWindowIdle(nint window, TimeSpan timeout) => IdleWaits++;
 }
 
 /// <summary>Runs sequencer calls synchronously and records completions.</summary>

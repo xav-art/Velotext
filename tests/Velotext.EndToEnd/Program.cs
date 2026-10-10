@@ -40,6 +40,7 @@ internal static class Program
         string? stopReason = null;
         using var instance = new VelotextInstance(velotext);
         var folder = instance.DataDirectory;
+        Scenarios.ArtifactFolder = folder;
         foreach (var name in apps)
         {
             var app = name.ToUpperInvariant() switch
@@ -60,14 +61,51 @@ internal static class Program
             }
 
             Console.WriteLine($"Running {app.Name}...");
+            var window = Scenarios.Open(app, results);
+            if (window == 0)
+            {
+                try
+                {
+                    app.Close?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new CheckResult(app.Name, "Close", false, ex.Message));
+                }
+
+                continue;
+            }
+
+            // The guard starts only now, so the user's click on a guided prompt does not stop the run.
             using var guard = new InputGuard();
             try
             {
-                results.AddRange(Scenarios.Run(app, new Typist(guard.Token), guard.Token));
+                var first = Scenarios.Run(app, window, new Typist(guard.Token), closeAfter: false, guard.Token);
+                if (first.All(r => r.Passed))
+                {
+                    results.AddRange(first);
+                    app.Close?.Invoke();
+                }
+                else
+                {
+                    // An app can stall for a moment; run the checks once more and report both attempts.
+                    Console.WriteLine($"  {first.Count(r => !r.Passed)} check(s) failed; running {app.Name} once more.");
+                    results.AddRange(first.Select(r => r with { Check = r.Check + " (attempt 1)" }));
+                    results.AddRange(Scenarios.Run(app, window, new Typist(guard.Token), closeAfter: true, guard.Token).Select(r => r with { Check = r.Check + " (attempt 2)" }));
+                }
             }
             catch (OperationCanceledException)
             {
                 stopReason = guard.Reason ?? "cancelled";
+                try
+                {
+                    app.Close?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    results.Add(new CheckResult(app.Name, "Close", false, ex.Message));
+                }
+
                 break;
             }
         }

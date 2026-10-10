@@ -4,6 +4,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using Velotext.Platform.Windows.Interop;
 using Velotext.Platform.Windows.Native;
 using Velotext.Platform.Windows.Threading;
 
@@ -29,6 +30,12 @@ public enum PasteOutcome
 
     /// <summary>The user clicked or changed windows before the paste keystroke, so it was not sent.</summary>
     Cancelled = 3,
+
+    /// <summary>
+    /// Another program read the phrase before the target, so the target's own read could not be seen; after a
+    /// fixed wait the paste is taken as done.
+    /// </summary>
+    Assumed = 5,
 
     /// <summary>An earlier paste is not confirmed yet, so this one was not started (a late read could belong to either).</summary>
     Waiting = 4,
@@ -271,6 +278,7 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
             {
                 session.MarkReplaced();
                 EndSession(session);
+                LogNotRestored(_logger);
                 return true;
             }
 
@@ -290,6 +298,7 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
             }
 
             // Windows now holds its own copy; do not keep the user's clipboard content in Velotext's memory.
+            LogRestored(_logger, session.Snapshot.Formats.Count);
             session.Snapshot.Clear();
             return true;
         }
@@ -368,14 +377,35 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
             return;
         }
 
-        // Someone read the phrase. Usually the target, or a helper process of it (browsers and store apps
-        // read from another process). Clipboard monitors skip the content because of the privacy flags.
-        // A reader may open the clipboard without a window; the read still counts. A read before the paste
-        // keystroke cannot be the paste, so it does not confirm it (the paste then counts as unconfirmed).
+        // A read by the paste target, or a helper process of it (browsers read from a child process),
+        // confirms the paste. Some clipboard monitors ignore the privacy flags and read every change; they
+        // are served too (refusing them makes them retry and keep the clipboard busy while the target tries
+        // to paste), but their read only tells the engine that the target's own read may be hidden: once a
+        // format is rendered, later reads of it are invisible. A reader without a window cannot be told
+        // apart and counts as the target. A read before the paste keystroke cannot be the paste.
         var requester = NativeMethods.GetOpenClipboardWindow();
-        if (requester != _thread.WindowHandle && session.PasteSent)
+        uint requesterProcess = 0;
+        if (requester != 0)
         {
-            session.MarkConsumed(requester);
+            NativeMethods.GetWindowThreadProcessId(requester, out requesterProcess);
+        }
+
+        var isTarget = requester == 0 || ProcessTree.IsSameOrDescendant(requesterProcess, session.TargetProcessId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            LogRender(_logger, format == _htmlFormat ? "HTML" : format == _rtfFormat ? "RTF" : format == NativeMethods.CfUnicodeText ? "text" : "other", ProcessInfo.NameOfWindowOwner(requester), session.PasteSent, isTarget);
+        }
+
+        if (session.PasteSent)
+        {
+            if (isTarget)
+            {
+                session.MarkConsumed(requester);
+            }
+            else
+            {
+                session.MarkOtherReader();
+            }
         }
 
         var data = Render(session.Payload, format);
@@ -577,6 +607,15 @@ public sealed partial class ClipboardService : Expansion.IClipboardService, IDis
     [LoggerMessage(Level = LogLevel.Warning, Message = "The clipboard is held by another application.")]
     private static partial void LogClipboardBusy(ILogger logger);
 
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Clipboard read: {Format} by {Reader} (after the paste keystroke: {AfterPaste}, target: {IsTarget}).")]
+    private static partial void LogRender(ILogger logger, string format, string reader, bool afterPaste, bool isTarget);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "User clipboard restored ({Formats} formats).")]
+    private static partial void LogRestored(ILogger logger, int formats);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Another app changed the clipboard meanwhile; it was left as it is.")]
+    private static partial void LogNotRestored(ILogger logger);
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Velotext could not put the user's clipboard back; the phrase stays on the clipboard.")]
     private static partial void LogRestoreFailed(ILogger logger);
 
@@ -604,6 +643,7 @@ public sealed class PasteSession
     private readonly TaskCompletionSource<nint> _consumed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _replaced;
     private volatile bool _pasteSent;
+    private volatile bool _otherReader;
 
     internal PasteSession(ClipboardPayload payload, uint targetProcessId, ClipboardSnapshot snapshot)
     {
@@ -629,6 +669,11 @@ public sealed class PasteSession
 
     /// <summary>Marks the paste keystroke as sent. Call right before sending it.</summary>
     public void MarkPasteSent() => _pasteSent = true;
+
+    /// <summary>True when a program other than the target read the phrase after the paste keystroke.</summary>
+    public bool OtherReaderSeen => _otherReader;
+
+    internal void MarkOtherReader() => _otherReader = true;
 
     /// <summary>Completes with the reading window when the target reads the phrase.</summary>
     public Task<nint> Consumed => _consumed.Task;

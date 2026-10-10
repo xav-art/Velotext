@@ -89,6 +89,12 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     private static readonly TimeSpan s_readerCloseWait = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan s_lateReadWait = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan s_lateReadPoll = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan s_assumedHold = TimeSpan.FromMilliseconds(800);
+    private static readonly TimeSpan s_pastePoll = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan s_targetIdleWait = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan s_restoreHold = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan s_firstPasteRestoreHold = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan s_undoModifierHold = TimeSpan.FromMilliseconds(150);
     private static readonly int[] s_modifierKeys = [0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0x5B, 0x5C];
 
     private readonly IExpansionHost _host;
@@ -105,6 +111,8 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     private readonly Task _replayWorker;
     private ISequencerHost? _monitor;
     private Task _lateRestore = Task.CompletedTask;
+    private Task _heldRestore = Task.CompletedTask;
+    private readonly ConcurrentDictionary<uint, bool> _pastedProcesses = new();
     private long _abandonedOperation;
     private int _disposed;
 
@@ -173,6 +181,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     /// <inheritdoc />
     public void HeldKeysDiscarded(long operationId, int count)
     {
+        LogDiscarded(_logger, operationId, count);
         // When the operation already stopped with a "phrase not inserted" notice, that notice covers it.
         if (operationId != Interlocked.Read(ref _abandonedOperation))
         {
@@ -225,7 +234,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         {
             // Cancelled operations and late restores give the user's clipboard back before they end;
             // queued replays still go out.
-            Task.WaitAll([_worker, _replayWorker, _lateRestore], TimeSpan.FromSeconds(2));
+            Task.WaitAll([_worker, _replayWorker, _lateRestore, _heldRestore], TimeSpan.FromSeconds(3));
         }
         catch (AggregateException)
         {
@@ -257,7 +266,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         {
             try
             {
-                var refused = _injector.Replay(keys, Physical());
+                var physical = Physical();
+                var refused = _injector.Replay(keys, physical);
+                LogReplay(_logger, keys.Count, refused, keys.Count(k => k.IsModifierKey), physical);
                 if (refused > 0)
                 {
                     _monitor?.Post(sequencer => sequencer.ReplayInjectionFailed(refused));
@@ -361,9 +372,9 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
                 return Abandon(place, phrase);
         }
 
-        // A delimiter (it can be Enter, which sends a chat message) follows only a confirmed paste, and
-        // only while the user is still there.
-        if (result == PasteOutcome.Consumed && !ResendDelimiter(request, place, phrase))
+        // A delimiter (it can be Enter, which sends a chat message) follows only a confirmed or assumed paste,
+        // and only while the user is still there.
+        if (result is PasteOutcome.Consumed or PasteOutcome.Assumed && !ResendDelimiter(request, place, phrase))
         {
             _host.PhraseInserted(phrase.Id);
             return OperationOutcome.None;
@@ -443,7 +454,17 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             return OperationOutcome.None;
         }
 
-        _injector.SendChord(InputInjector.VkControl, InputInjector.VkZ);
+        // Ctrl stays down a moment, so a busy app still sees Ctrl+Z, not Z, when it gets to the key.
+        _injector.SendChord(InputInjector.VkControl, InputInjector.VkZ, keepModifierDown: true);
+        try
+        {
+            await Task.Delay(s_undoModifierHold, _time, _stop.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _injector.ReleaseKeys([InputInjector.VkControl]);
+        }
+
         if (request.Ticket.TypedText.Length > 0)
         {
             _injector.TypeText(request.Ticket.TypedText);
@@ -454,10 +475,12 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
 
     /// <summary>
     /// Pastes through the clipboard and restores the user's clipboard afterwards. Returns <c>null</c>
-    /// when the clipboard could not be opened (nothing was changed). When the target does not read in time,
-    /// the phrase stays on the clipboard until the late read, until the user leaves the target, or for 10
-    /// seconds at most, so a slow app does not paste the user's own clipboard content by mistake. The
-    /// user's clipboard comes back in every case, also when Velotext shuts down meanwhile.
+    /// when the clipboard could not be opened (nothing was changed). After the target's read the operation
+    /// ends at once (typing goes on), but the user's clipboard comes back a little later, in the background:
+    /// some apps read the clipboard again while they paste (the first paste into an app is the slowest), and
+    /// restoring too early would paste the user's own clipboard content. When the target does not read in
+    /// time, the phrase stays on the clipboard until the late read, until the user leaves the target, or for
+    /// 10 seconds at most. The user's clipboard comes back in every case, also when Velotext shuts down.
     /// </summary>
     private async Task<PasteOutcome?> PasteAsync(ClipboardPayload payload, Place place, TimeSpan timeout)
     {
@@ -479,6 +502,16 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         }
 
         var restoreLater = false;
+        var ctrlDown = false;
+        void ReleaseCtrl()
+        {
+            if (ctrlDown)
+            {
+                ctrlDown = false;
+                _injector.ReleaseKeys([InputInjector.VkControl]);
+            }
+        }
+
         try
         {
             if (!StillThere(place))
@@ -488,13 +521,42 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
 
             var sentAt = _time.GetTimestamp();
             session.MarkPasteSent();
-            if (!_injector.SendChord(InputInjector.VkControl, InputInjector.VkV))
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                LogPasteSent(_logger, InputInjector.CurrentModifiers(), Physical());
+            }
+
+            // Ctrl stays down until the app has read the clipboard (or the wait ends): a busy app that checks
+            // Ctrl only when it gets to the V would otherwise type "v".
+            ctrlDown = true;
+            if (!_injector.SendChord(InputInjector.VkControl, InputInjector.VkV, keepModifierDown: true))
             {
                 return PasteOutcome.TimedOut;
             }
 
+            // Wait for the target's read. When another program read first, the target's read may be hidden,
+            // so a shorter fixed wait then decides.
             var consumed = session.Consumed;
-            await Task.WhenAny(consumed, Task.Delay(timeout, _time)).ConfigureAwait(false);
+            while (!consumed.IsCompleted)
+            {
+                var waited = _time.GetElapsedTime(sentAt);
+                if (waited >= timeout || (session.OtherReaderSeen && waited >= s_assumedHold))
+                {
+                    break;
+                }
+
+                await Task.WhenAny(consumed, Task.Delay(s_pastePoll, _time)).ConfigureAwait(false);
+            }
+
+            ReleaseCtrl();
+            LogPasteRead(_logger, consumed.IsCompleted, (long)_time.GetElapsedTime(sentAt).TotalMilliseconds, ProcessInfo.NameOf(place.Target.ProcessId));
+            if (!consumed.IsCompleted && session.OtherReaderSeen)
+            {
+                restoreLater = true;
+                _heldRestore = RestoreAfterHoldAsync(session, sentAt, RestoreHold(place.Target.ProcessId));
+                return PasteOutcome.Assumed;
+            }
+
             if (!consumed.IsCompleted)
             {
                 restoreLater = true;
@@ -507,15 +569,41 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
                 return PasteOutcome.ReplacedByOther;
             }
 
-            await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt).ConfigureAwait(false);
+            await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt, place.Target.Window).ConfigureAwait(false);
+            restoreLater = true;
+            _heldRestore = RestoreAfterHoldAsync(session, sentAt, RestoreHold(place.Target.ProcessId));
             return PasteOutcome.Consumed;
         }
         finally
         {
+            ReleaseCtrl();
             if (!restoreLater)
             {
                 await RestoreQuietlyAsync(session).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>How long after the paste keystroke the user's clipboard comes back: longer for the first paste into a process.</summary>
+    internal TimeSpan RestoreHold(uint processId) => _pastedProcesses.TryAdd(processId, true) ? s_firstPasteRestoreHold : s_restoreHold;
+
+    private async Task RestoreAfterHoldAsync(PasteSession session, long sentAt, TimeSpan hold)
+    {
+        try
+        {
+            var remaining = hold - _time.GetElapsedTime(sentAt);
+            if (remaining > TimeSpan.Zero)
+            {
+                await Task.Delay(remaining, _time, _stop.Token).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            // Shutting down: restore at once.
+        }
+        finally
+        {
+            await RestoreQuietlyAsync(session).ConfigureAwait(false);
         }
     }
 
@@ -535,7 +623,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
 
             if (consumed.IsCompleted && !session.ReplacedByOther)
             {
-                await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt).ConfigureAwait(false);
+                await WaitForReaderAsync(await consumed.ConfigureAwait(false), sentAt, target.Window).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
@@ -561,11 +649,13 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     }
 
     /// <summary>
-    /// Waits until the target has closed the clipboard, at least <see cref="s_minimumHold"/> after the
-    /// paste keystroke, plus a short grace for a second read. Restoring too early would paste the
-    /// user's own clipboard content into the target, so this errs on the side of waiting.
+    /// Waits until the target has closed the clipboard and its window handles messages again (an app that
+    /// pastes on its own thread has then finished; some read a second time while pasting), at least
+    /// <see cref="s_minimumHold"/> after the paste keystroke, plus a short grace for a second read.
+    /// Restoring too early would paste the user's own clipboard content into the target, so this errs on
+    /// the side of waiting.
     /// </summary>
-    private async Task WaitForReaderAsync(nint reader, long sentAt)
+    private async Task WaitForReaderAsync(nint reader, long sentAt, nint targetWindow)
     {
         // A reader that opened the clipboard without a window cannot be watched; the grace covers it.
         var closeDeadline = _time.GetTimestamp();
@@ -574,6 +664,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             await Task.Delay(10, _stop.Token).ConfigureAwait(false);
         }
 
+        await Task.Run(() => _system.WaitForWindowIdle(targetWindow, s_targetIdleWait), _stop.Token).ConfigureAwait(false);
         var remaining = s_minimumHold - _time.GetElapsedTime(sentAt);
         await Task.Delay(remaining > s_readerGrace ? remaining : s_readerGrace, _stop.Token).ConfigureAwait(false);
     }
@@ -613,14 +704,19 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
     /// True when Velotext may still type for this operation: the user is in the same window, has not
     /// clicked or switched windows, and the sequencer has not given up on the operation.
     /// </summary>
-    private bool StillThere(Place place) =>
-        place.Target.Window != 0
-        && _system.Foreground().Window == place.Target.Window
-        && (_monitor?.ContextGeneration ?? 0) == place.Generation
-        && !_expired.ContainsKey(place.OperationId);
+    private bool StillThere(Place place) => Gone(place) is null;
+
+    /// <summary>Why Velotext may no longer type for this operation, or <c>null</c> when it may.</summary>
+    private string? Gone(Place place) =>
+        place.Target.Window == 0 ? "no focused window"
+        : _system.Foreground().Window != place.Target.Window ? "another window became active"
+        : (_monitor?.ContextGeneration ?? 0) != place.Generation ? "a click or focus change"
+        : _expired.ContainsKey(place.OperationId) ? "the operation took too long"
+        : null;
 
     private OperationOutcome Abandon(Place place, Phrase phrase)
     {
+        LogStopped(_logger, place.OperationId, Gone(place) ?? "unknown");
         Interlocked.Exchange(ref _abandonedOperation, place.OperationId);
         var kind = _expired.ContainsKey(place.OperationId) ? ExpansionNoticeKind.Expired : ExpansionNoticeKind.WindowChanged;
         _host.Notify(new ExpansionNotice(kind, phrase.Description));
@@ -641,6 +737,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         if (!StillThere(place))
         {
             // The delimiter can be Enter; typing it into the window the user moved to could send a message.
+            LogStopped(_logger, place.OperationId, Gone(place) ?? "unknown");
             Interlocked.Exchange(ref _abandonedOperation, place.OperationId);
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.DelimiterSkipped, phrase.Description));
             return false;
@@ -665,6 +762,21 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         _host.Notify(new ExpansionNotice(reason, phrase.Description, TriggerRestored: true));
         return OperationOutcome.None;
     }
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Paste keystroke sent; Windows had {Logical} down, the keyboard {Physical}.")]
+    private static partial void LogPasteSent(ILogger logger, ModifierSides logical, ModifierSides physical);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Replayed {Count} held key events ({Refused} refused, {Modifiers} modifier keys); the keyboard holds {Physical}.")]
+    private static partial void LogReplay(ILogger logger, int count, int refused, int modifiers, ModifierSides physical);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Operation {OperationId} stopped: {Reason}.")]
+    private static partial void LogStopped(ILogger logger, long operationId, string reason);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Paste read by the target: {Read}, {Milliseconds} ms after the keystroke (target {Target}).")]
+    private static partial void LogPasteRead(ILogger logger, bool read, long milliseconds, string target);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Operation {OperationId}: {Count} held key presses discarded after a click or window change.")]
+    private static partial void LogDiscarded(ILogger logger, long operationId, int count);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "{Operation} failed.")]
     private static partial void LogOperationFailed(ILogger logger, string operation, Exception exception);
 

@@ -178,7 +178,7 @@ internal sealed class VelotextInstance : IDisposable
         WriteLibrary();
         File.WriteAllBytes(Path.Combine(DataDirectory, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(new AppSettings { StartWithWindows = false, TrayHintShown = true }, VelotextJsonContext.Default.AppSettings));
 
-        _process = Process.Start(new ProcessStartInfo(executable, ["--autostart", "--data-dir", DataDirectory]) { UseShellExecute = false })
+        _process = Process.Start(new ProcessStartInfo(executable, ["--autostart", "--verbose", "--data-dir", DataDirectory]) { UseShellExecute = false })
             ?? throw new InvalidOperationException("Velotext did not start.");
         var log = Path.Combine(DataDirectory, "logs");
         var deadline = DateTime.UtcNow.AddSeconds(30);

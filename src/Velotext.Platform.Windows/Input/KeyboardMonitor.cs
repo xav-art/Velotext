@@ -1,11 +1,13 @@
 // Velotext: installs the low-level keyboard and mouse hooks and runs the input sequencer on their thread.
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
+using System.Collections.Frozen;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 using Velotext.Core.Input;
 using Velotext.Core.Matching;
+using Velotext.Core.Model;
 using Velotext.Platform.Windows.Interop;
 using Velotext.Platform.Windows.Native;
 using Velotext.Platform.Windows.Threading;
@@ -28,7 +30,8 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     private const uint TickIntervalMilliseconds = 200;
     private const int SilentHookMilliseconds = 1000;
     private const int ReinstallIntervalMilliseconds = 60_000;
-    private const int VkLShift = 0xA0;
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
 
     private readonly ILogger<KeyboardMonitor> _logger;
     private readonly HookProc _keyboardProc;
@@ -45,8 +48,9 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     private int _lastWatchdogReinstall = Environment.TickCount - ReinstallIntervalMilliseconds;
     private bool _watchdogLogged;
 
-    // Left and right Shift, Ctrl and Alt as the user physically holds them (ModifierSides bits).
-    private int _physicalModifiers;
+    // Shift, Ctrl, Alt and Win as the user physically holds them, and the Alt or Win release mask.
+    private readonly PhysicalKeyboardState _keyboard = new();
+    private volatile FrozenSet<HotkeyGesture> _hotkeys = FrozenSet<HotkeyGesture>.Empty;
 
     /// <summary>Starts the hook thread and installs the hooks.</summary>
     /// <param name="sink">Receives expansion, undo and replay requests (on the hook thread).</param>
@@ -82,7 +86,15 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
     public long ContextGeneration => Interlocked.Read(ref _contextGeneration);
 
     /// <inheritdoc />
-    public ModifierSides HeldModifiers => (ModifierSides)Volatile.Read(ref _physicalModifiers);
+    public ModifierSides HeldModifiers => _keyboard.Sides;
+
+    /// <summary>
+    /// Sets the registered hotkeys. When one that uses Alt or Win is pressed, the release of Alt or Win is
+    /// masked, so the app does not take it as a tap and open its menu. Safe from any thread.
+    /// </summary>
+    /// <param name="gestures">The registered hotkeys.</param>
+    public void UpdateHotkeys(IEnumerable<HotkeyGesture> gestures) =>
+        _hotkeys = (gestures ?? throw new ArgumentNullException(nameof(gestures))).ToFrozenSet();
 
     /// <summary>Replaces the autotext triggers. Safe from any thread; takes effect on the next key.</summary>
     /// <param name="index">The new trigger index.</param>
@@ -207,18 +219,39 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
                         ResyncModifiers();
                     }
 
-                    if (vk is >= VkLShift and <= VkLShift + 5)
+                    var extended = (data->Flags & NativeMethods.LlkhfExtended) != 0;
+                    _keyboard.Apply(vk, (int)data->ScanCode, extended, up);
+                    var mask = _keyboard.Decide(vk, (int)data->ScanCode, extended, up, _hotkeys);
+                    if (mask.Release is { } release)
                     {
-                        var bit = 1 << (vk - VkLShift);
-                        Volatile.Write(ref _physicalModifiers, up ? _physicalModifiers & ~bit : _physicalModifiers | bit);
+                        // Sent now, so it reaches the app right after this event.
+                        LogMaskedRelease(_logger, release.VirtualKey);
+                        InputInjector.SendMaskedRelease(release.VirtualKey, release.ScanCode, release.Extended);
+                    }
+
+                    if (mask.Swallow)
+                    {
+                        return 1;
                     }
                 }
 
                 var attributes = (up ? KeyStrokeAttributes.KeyUp : KeyStrokeAttributes.None)
                     | ((data->Flags & NativeMethods.LlkhfExtended) != 0 ? KeyStrokeAttributes.Extended : KeyStrokeAttributes.None)
-                    | HeldModifierFlags();
+                    | _keyboard.Flags;
                 var stroke = new KeyStroke(vk, (int)data->ScanCode, attributes, origin);
-                if (sequencer.OnKey(stroke) == KeyDecision.Swallow)
+                var decision = sequencer.OnKey(stroke);
+                if (stroke.IsModifierKey && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    // Modifier keys only: never a key that types text.
+                    LogModifierEvent(_logger, vk, up, origin, decision, _keyboard.Sides);
+                }
+                else if (origin == KeyOrigin.Replay && _logger.IsEnabled(LogLevel.Debug))
+                {
+                    // Shows that a replayed key went through the hook to the app, without saying which key.
+                    LogReplayedKey(_logger, up, decision);
+                }
+
+                if (decision == KeyDecision.Swallow)
                 {
                     return 1;
                 }
@@ -233,16 +266,10 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         return NativeMethods.CallNextHookEx(0, code, wParam, lParam);
     }
 
-    private KeyStrokeAttributes HeldModifierFlags()
-    {
-        var held = _physicalModifiers;
-        return ((held & 0b000011) != 0 ? KeyStrokeAttributes.Shift : KeyStrokeAttributes.None)
-            | ((held & 0b001100) != 0 ? KeyStrokeAttributes.Control : KeyStrokeAttributes.None)
-            | ((held & 0b110000) != 0 ? KeyStrokeAttributes.Alt : KeyStrokeAttributes.None);
-    }
-
-    private void ResyncModifiers() => Volatile.Write(ref _physicalModifiers, (int)InputInjector.CurrentModifiers());
-
+    private void ResyncModifiers() =>
+        _keyboard.Resync(
+            InputInjector.CurrentModifiers(),
+            ((NativeMethods.GetAsyncKeyState(VkLWin) | NativeMethods.GetAsyncKeyState(VkRWin)) & 0x8000) != 0);
     /// <summary>The caret may have moved: tell the sequencer and let running operations see the change.</summary>
     private void LoseContext(InputSequencer sequencer)
     {
@@ -260,6 +287,7 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
             {
                 try
                 {
+                    LogContextLost(_logger, "click");
                     LoseContext(sequencer);
                 }
                 catch (Exception ex)
@@ -283,6 +311,11 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
         {
             NativeMethods.GetWindowThreadProcessId(window, out var processId);
             sequencer.SuppressMatching = processId == (uint)Environment.ProcessId;
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                LogContextLost(_logger, "window change to " + ProcessInfo.NameOf(processId));
+            }
+
             LoseContext(sequencer);
         }
         catch (Exception ex)
@@ -362,6 +395,18 @@ public sealed partial class KeyboardMonitor : Expansion.ISequencerHost, IDisposa
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "The keyboard hook stopped receiving input; Velotext reinstalled it. Later reinstalls are not logged.")]
     private static partial void LogWatchdogReinstall(ILogger logger);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Modifier key 0x{VirtualKey:X2} {Direction}: origin {Origin}, {Decision}; held now {Held}.")]
+    private static partial void LogModifierEvent(ILogger logger, int virtualKey, bool direction, KeyOrigin origin, KeyDecision decision, ModifierSides held);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Replayed key event back through the hook (release: {Release}): {Decision}.")]
+    private static partial void LogReplayedKey(ILogger logger, bool release, KeyDecision decision);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Release of 0x{VirtualKey:X2} after a hotkey sent behind a masking key.")]
+    private static partial void LogMaskedRelease(ILogger logger, int virtualKey);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Typing context reset: {Cause}.")]
+    private static partial void LogContextLost(ILogger logger, string cause);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Error in a keyboard monitor callback.")]
     private static partial void LogCallbackError(ILogger logger, Exception exception);

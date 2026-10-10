@@ -165,8 +165,9 @@ public sealed partial class App : Application, IDisposable
     private void StartLogging()
     {
         Directory.CreateDirectory(_paths.LogDirectory);
-        Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Information()
+        var configuration = new LoggerConfiguration();
+        configuration = _options.Verbose ? configuration.MinimumLevel.Debug() : configuration.MinimumLevel.Information();
+        Log.Logger = configuration
             .WriteTo.File(
                 Path.Combine(_paths.LogDirectory, "velotext-.log"),
                 rollingInterval: RollingInterval.Day,

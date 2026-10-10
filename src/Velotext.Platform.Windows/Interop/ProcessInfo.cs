@@ -11,8 +11,12 @@ namespace Velotext.Platform.Windows.Interop;
 /// <param name="ThreadId">Owning thread id, or zero.</param>
 public readonly record struct ForegroundTarget(nint Window, uint ProcessId, uint ThreadId)
 {
-    /// <summary>Reads the current foreground window.</summary>
-    public static ForegroundTarget Current()
+    /// <summary>
+    /// Reads the current foreground window. Store apps run inside a frame window that belongs to a host
+    /// process; for them the process is the app's own (the owner of its core window), which is the one
+    /// that reads the clipboard.
+    /// </summary>
+    public static unsafe ForegroundTarget Current()
     {
         var window = NativeMethods.GetForegroundWindow();
         if (window == 0)
@@ -21,6 +25,17 @@ public readonly record struct ForegroundTarget(nint Window, uint ProcessId, uint
         }
 
         var threadId = NativeMethods.GetWindowThreadProcessId(window, out var processId);
+        var buffer = stackalloc char[64];
+        var length = NativeMethods.GetClassNameW(window, buffer, 64);
+        if (new ReadOnlySpan<char>(buffer, Math.Max(0, length)).SequenceEqual("ApplicationFrameWindow"))
+        {
+            var core = NativeMethods.FindWindowExW(window, 0, "Windows.UI.Core.CoreWindow", null);
+            if (core != 0)
+            {
+                threadId = NativeMethods.GetWindowThreadProcessId(core, out processId);
+            }
+        }
+
         return new ForegroundTarget(window, processId, threadId);
     }
 
@@ -34,6 +49,29 @@ public static class ProcessInfo
     private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint TokenQuery = 0x0008;
     private const int TokenElevation = 20;
+
+    /// <summary>The executable name of a process, for diagnostic logs only (no content), or its id when unknown.</summary>
+    /// <param name="processId">The process id.</param>
+    public static string NameOf(uint processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)processId);
+            return process.ProcessName;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return processId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    /// <summary>The process that owns a window, by name, for diagnostic logs only.</summary>
+    /// <param name="window">The window handle.</param>
+    public static string NameOfWindowOwner(nint window)
+    {
+        NativeMethods.GetWindowThreadProcessId(window, out var processId);
+        return window == 0 ? "none" : NameOf(processId);
+    }
 
     /// <summary>
     /// True when the process runs as administrator, or when Velotext may not even query it (protected or
