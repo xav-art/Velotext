@@ -174,4 +174,25 @@ public sealed class DesktopTests
             await clipboard.CopyAsync(new ClipboardPayload(userText ?? string.Empty, null, null));
         }
     }
+
+    [Fact(SkipUnless = nameof(Enabled), Skip = SkipReason)]
+    public async Task A_key_combination_owned_by_another_program_is_recognised()
+    {
+        // Act as another program: own an unusual combination from a separate thread with a window.
+        const int Id = 0x0BEE;
+        const uint CtrlAltShift = 0x0001 | 0x0002 | 0x0004;
+        const uint F13 = 0x7C;
+        using var other = new MessageLoopThread("Other program", ThreadPriority.Normal, null, _ => { });
+        Assert.True(await other.InvokeAsync(() => NativeMethods.RegisterHotKey(other.WindowHandle, Id, CtrlAltShift, F13)));
+        try
+        {
+            Assert.True(new HotkeyOwnershipCache().IsClaimed((int)F13, shift: true, ctrl: true, alt: true));
+        }
+        finally
+        {
+            await other.InvokeAsync(() => NativeMethods.UnregisterHotKey(other.WindowHandle, Id));
+        }
+
+        Assert.False(new HotkeyOwnershipCache().IsClaimed((int)F13, shift: true, ctrl: true, alt: true));
+    }
 }

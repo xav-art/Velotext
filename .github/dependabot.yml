@@ -1,0 +1,22 @@
+# Velotext: weekly update pull requests for NuGet packages and pinned GitHub Actions. New versions are only
+# proposed after they have been public for 14 days.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      nuget:
+        patterns: ['*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ['*']

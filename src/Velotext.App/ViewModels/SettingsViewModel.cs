@@ -19,6 +19,7 @@ namespace Velotext.App.ViewModels;
 /// <param name="ApplyTheme">Applies a theme.</param>
 /// <param name="ReplaceLibrary">Replaces the library (restore from backup).</param>
 /// <param name="DescribePauseHotkeyProblem">Explains why a pause hotkey cannot be used, or returns <c>null</c>.</param>
+/// <param name="OpenFile">Opens a file with its default app (the license notices), or <c>null</c> when not available.</param>
 public sealed record SettingsActions(
     string ExecutablePath,
     string DataDirectory,
@@ -26,7 +27,8 @@ public sealed record SettingsActions(
     Action<string> OpenFolder,
     Action<AppTheme> ApplyTheme,
     Action<PhraseLibrary> ReplaceLibrary,
-    Func<HotkeyGesture, string?> DescribePauseHotkeyProblem);
+    Func<HotkeyGesture, string?> DescribePauseHotkeyProblem,
+    Action<string>? OpenFile = null);
 
 /// <summary>State of the settings window. Each property change is saved immediately.</summary>
 public sealed partial class SettingsViewModel : ObservableObject
@@ -135,6 +137,10 @@ public sealed partial class SettingsViewModel : ObservableObject
     /// <summary>Opens the log folder.</summary>
     [RelayCommand]
     private void OpenLogFolder() => _actions.OpenFolder(_actions.LogDirectory);
+
+    /// <summary>Opens the notices of the third-party software that Velotext includes.</summary>
+    [RelayCommand]
+    private void OpenLicenses() => _actions.OpenFile?.Invoke(Path.Combine(AppContext.BaseDirectory, "THIRD-PARTY-NOTICES.txt"));
 
     /// <summary>Replaces the library with a backup the user picks.</summary>
     [RelayCommand]

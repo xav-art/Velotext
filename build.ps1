@@ -76,7 +76,7 @@ try {
         if (Test-Path $releaseDir) { Remove-Item $releaseDir -Recurse -Force }
         Invoke-Step 'Restore tools' { dotnet tool restore }
         Invoke-Step 'Pack installer' {
-            dotnet vpk pack --packId Velotext --packVersion $Version --packDir $publishDir --mainExe Velotext.exe --packTitle Velotext --packAuthors 'Velotext contributors' --icon src/Velotext.App/Assets/velotext.ico --outputDir $releaseDir --runtime win-x64
+            dotnet vpk pack --packId Velotext --packVersion $Version --packDir $publishDir --mainExe Velotext.exe --packTitle Velotext --packAuthors 'Velotext contributors' --icon src/Velotext.App/Assets/velotext.ico --outputDir $releaseDir --runtime win-x64 --shortcuts StartMenuRoot
         }
         Write-Host "Installer: $releaseDir" -ForegroundColor Green
     }

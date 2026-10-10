@@ -30,6 +30,7 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
     private static readonly string[] s_ascii = [.. Enumerable.Range(0, 128).Select(i => ((char)i).ToString())];
 
     private readonly byte[] _state = new byte[256];
+    private readonly HotkeyOwnershipCache _claimedKeys = new();
     private char _pendingDeadKey;
 
     /// <inheritdoc />
@@ -177,6 +178,14 @@ internal sealed unsafe class KeyboardTranslator : IKeyTranslator
             {
                 return KeyMeaning.Reset;
             }
+        }
+
+        // Another program may own this key combination as a global hotkey (for example Shift with a
+        // punctuation key). Windows then hands the key to that program and the app never sees the character,
+        // so it must not count as typed text.
+        if (_claimedKeys.IsClaimed(vk, IsDown(VkShift), ctrl, alt))
+        {
+            return KeyMeaning.Reset;
         }
 
         // Common characters reuse a cached string, so typing does not leave a trail of strings in memory.

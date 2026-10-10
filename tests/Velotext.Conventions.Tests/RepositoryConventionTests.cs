@@ -11,7 +11,7 @@ namespace Velotext.Conventions.Tests;
 /// </summary>
 public sealed partial class RepositoryConventionTests
 {
-    private static readonly string[] s_textExtensions = [".cs", ".xaml", ".csproj", ".props", ".targets", ".json", ".md", ".yml", ".yaml", ".ps1", ".config", ".editorconfig", ".gitignore", ".gitattributes", ".manifest", ".slnx"];
+    private static readonly string[] s_textExtensions = [".cs", ".xaml", ".csproj", ".props", ".targets", ".json", ".md", ".txt", ".yml", ".yaml", ".ps1", ".config", ".editorconfig", ".gitignore", ".gitattributes", ".manifest", ".slnx"];
     private static readonly string[] s_skippedFolders = ["bin", "obj", ".git", ".dotnet", ".vs", "TestResults", "artifacts", "docs", ".claude", ".sf", "node_modules"];
 
     private static string RepositoryRoot
@@ -112,4 +112,22 @@ public sealed partial class RepositoryConventionTests
 
     [GeneratedRegex(@"^public sealed (partial )?class \w+", RegexOptions.Multiline)]
     private static partial Regex TestClassPattern();
+
+    [Fact]
+    public void Third_party_notices_name_every_package_that_ships_with_the_app()
+    {
+        // The app's lock file lists every package in the installer; each one needs its license notice.
+        var notices = File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Velotext.App", "THIRD-PARTY-NOTICES.txt"));
+        using var lockFile = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(RepositoryRoot, "src", "Velotext.App", "packages.lock.json")));
+        var packages = lockFile.RootElement.GetProperty("dependencies").EnumerateObject()
+            .SelectMany(framework => framework.Value.EnumerateObject())
+            .Where(package => package.Value.GetProperty("type").GetString() != "Project")
+            .Select(package => package.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Assert.NotEmpty(packages);
+        Assert.DoesNotContain(packages, package => !notices.Contains(package, StringComparison.OrdinalIgnoreCase));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot, "LICENSE")));
+    }
 }

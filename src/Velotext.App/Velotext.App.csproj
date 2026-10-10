@@ -10,6 +10,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <StartupObject>Velotext.App.Program</StartupObject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- XML docs are needed at build time (missing descriptions fail the build) but not at run time. -->
+    <PublishDocumentationFiles>false</PublishDocumentationFiles>
+    <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
     <Description>Velotext: a per-user text expander for Windows. Type a short trigger and Velotext inserts the formatted phrase.</Description>
   </PropertyGroup>
   <ItemGroup>
@@ -26,6 +29,19 @@
     <ProjectReference Include="..\Velotext.Core\Velotext.Core.csproj" />
     <ProjectReference Include="..\Velotext.Platform.Windows\Velotext.Platform.Windows.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The license and third-party notices travel with every copy of the app (MIT and Apache-2.0 require it). -->
+    <None Include="..\..\LICENSE" Link="LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="THIRD-PARTY-NOTICES.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <!-- A self-contained app ships the .NET runtime, so it also ships the runtime's own third-party notices. -->
+  <Target Name="CopyRuntimeNotices" AfterTargets="Publish" Condition="'$(SelfContained)' == 'true'">
+    <PropertyGroup>
+      <RuntimeNoticesFile>$(NuGetPackageRoot)microsoft.netcore.app.runtime.$(RuntimeIdentifier)\$(BundledNETCoreAppPackageVersion)\THIRD-PARTY-NOTICES.TXT</RuntimeNoticesFile>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(RuntimeNoticesFile)')" Text="The .NET runtime notices were not found at $(RuntimeNoticesFile)." />
+    <Copy SourceFiles="$(RuntimeNoticesFile)" DestinationFiles="$(PublishDir)DOTNET-THIRD-PARTY-NOTICES.TXT" />
+  </Target>
   <ItemGroup>
     <Resource Include="Assets\*.ico" />
     <Resource Include="Assets\*.png" />

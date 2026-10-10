@@ -33,8 +33,11 @@ editors. It runs with normal user rights, starts with Windows and stays out of t
 ## Install
 
 1. Download `Velotext-win-Setup.exe` from the [latest release](https://github.com/xav-art/Velotext/releases/latest).
-2. Run it. Velotext installs for your user only, in `%LocalAppData%\Velotext`. No admin rights are needed.
+2. Run it. Velotext installs for your user only, in `%LocalAppData%\Velotext`, and adds a Start menu entry. No
+   admin rights are needed.
 3. To update, run the setup of a newer version. Your phrases and settings stay.
+4. To uninstall, use **Settings**, **Apps**, **Installed apps**, **Velotext**, **Uninstall**. Your phrases and
+   settings in `%APPDATA%\Velotext` stay, so a reinstall finds them again; delete that folder to remove them.
 
 The installer is not code-signed yet, so Windows SmartScreen can show a warning the first time. Each release lists
 the SHA-256 checksum of every file and a GitHub build attestation, so you or your IT team can check that the file
@@ -89,7 +92,7 @@ phrase, the phrase stays on the clipboard until the app reads it, you switch to 
 | Automatic backups of your phrases | `%APPDATA%\Velotext\backups` (the 20 most recent) |
 | How often and when you last used each phrase (for "Recently used") | `%APPDATA%\Velotext\usage.json` |
 | Logs (no typed text, no phrase content) | `%LOCALAPPDATA%\Velotext\logs` (the last 7 daily files) |
-| Installer log (no typed text, no phrase content) | `%LOCALAPPDATA%\Velotext\velopack.log` |
+| Installer and uninstaller logs (no typed text, no phrase content) | `%LOCALAPPDATA%\Velopack` (`velopack.log`, `velopack_Velotext.log`) |
 
 Every save is atomic, so a crash or power loss never leaves a half-written file. If the phrase file is ever
 damaged, Velotext loads the most recent backup and tells you. **Settings** has buttons to open these folders and
@@ -127,4 +130,6 @@ Tests that use the real clipboard, hotkeys and keyboard hook run only with `.\bu
 
 ## License
 
-Velotext is free software under the [MIT License](LICENSE).
+Velotext is free software under the [MIT License](LICENSE). It includes third-party software under the MIT
+and Apache-2.0 licenses; the notices are in [THIRD-PARTY-NOTICES.txt](src/Velotext.App/THIRD-PARTY-NOTICES.txt)
+and ship with the app (**Settings**, **View licenses**).

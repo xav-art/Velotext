@@ -98,6 +98,8 @@
 
       <TextBlock Style="{StaticResource Heading}" Text="About" />
       <TextBlock Text="{Binding Version}" />
+      <Button Content="View licenses" Command="{Binding OpenLicensesCommand}" HorizontalAlignment="Left" Margin="0,8,0,0"
+              ToolTip="Open the licenses of the software that Velotext includes" />
       <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,6,0,0"
                  Text="Velotext is free software under the MIT License. To find triggers, it keeps the characters that you typed since the last Enter, Tab or click in memory (128 at most). It never saves or sends what you type." />
     </StackPanel>

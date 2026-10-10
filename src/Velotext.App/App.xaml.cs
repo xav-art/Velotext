@@ -93,8 +93,12 @@ public sealed partial class App : Application, IDisposable
         _runtime.PausedChanged += (_, _) => Dispatcher.BeginInvoke(() => _tray?.SetPaused(_runtime?.IsPaused ?? false));
         _runtime.Start();
 
-        _autostart = new AutostartService();
-        if (IsInstalled)
+        // A copy started with its own data folder (tests, demos) must never change the real startup entry:
+        // it keeps its choice under a separate key that Windows does not read.
+        _autostart = _paths.IsCustom
+            ? new AutostartService("Velotext", @"Software\Velotext\IsolatedCopies\Run", @"Software\Velotext\IsolatedCopies\StartupApproved")
+            : new AutostartService();
+        if (IsInstalled && !_paths.IsCustom)
         {
             _autostart.Reconcile(ExecutablePath, _settings.Current.StartWithWindows);
         }
@@ -228,7 +232,8 @@ public sealed partial class App : Application, IDisposable
                     _library!.BackupNow();
                     _mainViewModel!.ReplaceLibrary(library);
                 },
-                gesture => _runtime!.DescribePauseHotkeyProblem(gesture)));
+                gesture => _runtime!.DescribePauseHotkeyProblem(gesture),
+                OpenFile));
         EventHandler<bool> conflictChanged = (_, _) => Dispatcher.BeginInvoke(viewModel.RefreshPauseHotkeyProblem);
         _runtime!.PauseHotkeyConflictChanged += conflictChanged;
         _settingsWindow = new SettingsWindow(viewModel) { Owner = _mainWindow is { IsVisible: true } ? _mainWindow : null };
@@ -284,6 +289,18 @@ public sealed partial class App : Application, IDisposable
     {
         _mainViewModel?.CommitNow();
         _library?.Flush();
+    }
+
+    private void OpenFile(string file)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(file) { UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _dialogs?.ShowError("The file did not open", file);
+        }
     }
 
     private void OpenFolder(string folder)

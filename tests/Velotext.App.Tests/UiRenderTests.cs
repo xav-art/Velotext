@@ -120,6 +120,7 @@ public sealed class UiRenderTests : IDisposable
     public void Settings_window_renders_without_binding_errors()
     {
         var root = @"Software\Velotext.Tests\" + Guid.NewGuid().ToString("N");
+        string? opened = null;
         var errors = WpfThread.Run(() => CaptureBindingErrors(() =>
         {
             using var themeService = new ThemeService(Application.Current);
@@ -129,12 +130,13 @@ public sealed class UiRenderTests : IDisposable
                 new AutostartService("VelotextTest", root + @"\Run", root + @"\Approved"),
                 _env.Library,
                 _env.Dialogs,
-                new SettingsActions(@"C:\Apps\Velotext.exe", _env.Directory, _env.Paths.LogDirectory, _ => { }, _ => { }, _ => { }, _ => null));
+                new SettingsActions(@"C:\Apps\Velotext.exe", _env.Directory, _env.Paths.LogDirectory, _ => { }, _ => { }, _ => { }, _ => null, file => opened = file));
             var window = new SettingsWindow(vm) { Left = -20000, Top = -20000, ShowActivated = false };
             window.Show();
             try
             {
                 Snapshot(window, "settings-Dark");
+                vm.OpenLicensesCommand.Execute(null);
             }
             finally
             {
@@ -144,6 +146,8 @@ public sealed class UiRenderTests : IDisposable
 
         Microsoft.Win32.Registry.CurrentUser.DeleteSubKeyTree(@"Software\Velotext.Tests", throwOnMissingSubKey: false);
         Assert.Empty(errors);
+        Assert.Equal(Path.Combine(AppContext.BaseDirectory, "THIRD-PARTY-NOTICES.txt"), opened);
+        Assert.True(File.Exists(opened), "The notices file is copied next to the app.");
     }
 
     [Fact]
