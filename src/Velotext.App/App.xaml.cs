@@ -9,6 +9,7 @@ using Serilog;
 using Velotext.App.Services;
 using Velotext.App.ViewModels;
 using Velotext.App.Views;
+using Velotext.Core.Usage;
 using Velotext.Platform.Windows.Lifecycle;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
@@ -86,7 +87,9 @@ public sealed partial class App : Application, IDisposable
         }
 
         _usage = new UsageService(_paths, time, loggers.CreateLogger<UsageService>());
-        _usage.Load();
+        _usage.Load(id => _library.Snapshot.Library.FindPhrase(id) is { } phrase
+            ? TypingSavings.EstimatedSavedPerUse(phrase)
+            : 0);
 
         _tray = new TrayService(new TrayActions(ShowMainWindow, TogglePause, ShowSettings, ExitApplication));
         _runtime = new ExpansionRuntime(_library, _settings, _usage, _tray, loggers, time);

@@ -66,10 +66,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>The selected tree node.</summary>
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(DuplicateCommand), nameof(DeleteCommand), nameof(MoveUpCommand), nameof(MoveDownCommand), nameof(RenameCommand), nameof(MoveToFolderCommand), nameof(ExportCommand))]
+    [NotifyPropertyChangedFor(nameof(IsDashboardVisible), nameof(IsEmptyEditorVisible))]
     private TreeNodeViewModel? _selectedNode;
 
     /// <summary>The phrase shown in the editor, or <c>null</c>.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsEmptyEditorVisible))]
     private PhraseViewModel? _editorPhrase;
 
     /// <summary>The search box text.</summary>
@@ -182,6 +184,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     /// <summary>The "Most used" folder (last 30 days).</summary>
     public ShortcutFolderViewModel MostUsed { get; } = ShortcutFolderViewModel.CreateMostUsed();
+
+    /// <summary>The usage dashboard, shown in the right panel while "Most used" is selected.</summary>
+    public UsageDashboardViewModel Dashboard { get; } = new();
+
+    /// <summary>True while "Most used" is selected, so the right panel shows the dashboard.</summary>
+    public bool IsDashboardVisible => ReferenceEquals(SelectedNode, MostUsed);
+
+    /// <summary>True when the right panel shows neither a phrase nor the dashboard.</summary>
+    public bool IsEmptyEditorVisible => EditorPhrase is null && !IsDashboardVisible;
 
     /// <summary>True when the library holds no phrases.</summary>
     public bool IsLibraryEmpty => PhraseCount == 0;
@@ -696,6 +707,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void ClearSearch() => SearchText = string.Empty;
 
+    /// <summary>Selects a phrase in the tree, for example from the dashboard table.</summary>
+    /// <param name="phrase">The phrase to open.</param>
+    [RelayCommand]
+    private void OpenPhrase(PhraseViewModel? phrase)
+    {
+        if (phrase is null || !_phrases.ContainsKey(phrase.Id))
+        {
+            return;
+        }
+
+        ClearSearch();
+        Select(phrase);
+        FocusNodeRequested?.Invoke(this, phrase);
+    }
+
     private bool HasSelectedPhrase() => SelectedPhrase() is not null;
 
     private bool CanDelete() => SelectedNode is ShortcutViewModel or { IsReadOnly: false };
@@ -708,13 +734,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void DismissBanner() => Banner = null;
 
-    partial void OnSelectedNodeChanged(TreeNodeViewModel? value) =>
+    partial void OnSelectedNodeChanged(TreeNodeViewModel? value)
+    {
         EditorPhrase = value switch
         {
             PhraseViewModel phrase => phrase,
             ShortcutViewModel shortcut => shortcut.Target,
             _ => null,
         };
+
+        if (IsDashboardVisible)
+        {
+            RefreshUsage();
+        }
+    }
 
     partial void OnEditorPhraseChanged(PhraseViewModel? value) => UpdateEditorUsage();
 
@@ -976,24 +1009,37 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ProblemCount = _phrases.Values.Sum(p => p.ProblemCount);
     }
 
-    /// <summary>Rebuilds "Recently used", "Most used" and the editor's usage line from the usage data.</summary>
+    /// <summary>Rebuilds "Recently used", "Most used" (with counts), the dashboard and the editor's usage line.</summary>
     private void RefreshUsage()
     {
+        var report = _usage.Report(_phrases.ContainsKey);
+        var mostUsed = report.Phrases.Take(ShortcutCount).ToList();
         Fill(Recent, _usage.Tracker.MostRecent(ShortcutCount, _phrases.ContainsKey));
-        Fill(MostUsed, _usage.MostUsed(ShortcutCount, _phrases.ContainsKey));
+        Fill(MostUsed, [.. mostUsed.Select(p => p.PhraseId)], mostUsed.ToDictionary(p => p.PhraseId, p => p.Uses));
+        if (IsDashboardVisible)
+        {
+            Dashboard.Update(report, _phrases.GetValueOrDefault);
+        }
+
         UpdateEditorUsage();
     }
 
     /// <summary>Shows phrases in a shortcut folder, or its hint when there are none. An unchanged list is kept, so its selection stays.</summary>
     /// <param name="folder">The folder to fill.</param>
     /// <param name="ids">The phrases to show, in order.</param>
-    private void Fill(ShortcutFolderViewModel folder, IReadOnlyList<Guid> ids)
+    /// <param name="uses">Insertions to show with each phrase, or <c>null</c> for none.</param>
+    private void Fill(ShortcutFolderViewModel folder, IReadOnlyList<Guid> ids, IReadOnlyDictionary<Guid, int>? uses = null)
     {
         folder.IsVisible = PhraseSearch.Tokenize(SearchText).Length == 0;
         var targets = ids.Select(id => _phrases[id]).ToList();
-        var shown = folder.Items.OfType<ShortcutViewModel>().Select(entry => entry.Target).ToList();
-        if (targets.Count == 0 ? folder.Items is [ShortcutHintViewModel] : shown.SequenceEqual(targets))
+        var shown = folder.Items.OfType<ShortcutViewModel>().ToList();
+        if (targets.Count == 0 ? folder.Items is [ShortcutHintViewModel] : shown.Select(entry => entry.Target).SequenceEqual(targets))
         {
+            foreach (var entry in shown)
+            {
+                entry.Uses = uses?.GetValueOrDefault(entry.Target.Id);
+            }
+
             return;
         }
 
@@ -1005,7 +1051,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         folder.Items.Clear();
         foreach (var target in targets)
         {
-            folder.Items.Add(new ShortcutViewModel(target));
+            folder.Items.Add(new ShortcutViewModel(target) { Uses = uses?.GetValueOrDefault(target.Id) });
         }
 
         if (folder.Items.Count == 0)

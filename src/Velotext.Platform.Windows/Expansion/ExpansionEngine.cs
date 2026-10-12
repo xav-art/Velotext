@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Velotext.Core.Input;
 using Velotext.Core.Model;
 using Velotext.Core.RichText;
+using Velotext.Core.Usage;
 using Velotext.Platform.Windows.Clipboard;
 using Velotext.Platform.Windows.Input;
 using Velotext.Platform.Windows.Interop;
@@ -65,9 +66,10 @@ public interface IExpansionHost
     /// <param name="id">Phrase id.</param>
     Phrase? FindPhrase(Guid id);
 
-    /// <summary>Called after a phrase was inserted or copied, for "Recently used", "Most used" and the 30-day count.</summary>
+    /// <summary>Called after a phrase was inserted or copied, for "Recently used", "Most used" and the usage dashboard.</summary>
     /// <param name="id">Phrase id.</param>
-    void PhraseInserted(Guid id);
+    /// <param name="typedCharacters">Characters the user typed to trigger it: the trigger text, or one for a hotkey.</param>
+    void PhraseInserted(Guid id, int typedCharacters);
 
     /// <summary>Shows a notice to the user. Called from a background thread.</summary>
     /// <param name="notice">The notice.</param>
@@ -351,7 +353,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
                 return PutTriggerBack(request, place, phrase, ExpansionNoticeKind.ClipboardBusy);
             }
 
-            _host.PhraseInserted(phrase.Id);
+            _host.PhraseInserted(phrase.Id, match.TypedText.Length);
             if (ResendDelimiter(request, place, phrase))
             {
                 _host.Notify(new ExpansionNotice(ExpansionNoticeKind.CopiedToClipboard, phrase.Description));
@@ -376,11 +378,11 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
         // and only while the user is still there.
         if (result is PasteOutcome.Consumed or PasteOutcome.Assumed && !ResendDelimiter(request, place, phrase))
         {
-            _host.PhraseInserted(phrase.Id);
+            _host.PhraseInserted(phrase.Id, match.TypedText.Length);
             return OperationOutcome.None;
         }
 
-        _host.PhraseInserted(phrase.Id);
+        _host.PhraseInserted(phrase.Id, match.TypedText.Length);
         if (result == PasteOutcome.TimedOut)
         {
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.PasteNotConfirmed, phrase.Description));
@@ -416,7 +418,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
             _host.Notify(new ExpansionNotice(copied ? ExpansionNoticeKind.CopiedToClipboard : ExpansionNoticeKind.ClipboardBusy, phrase.Description));
             if (copied)
             {
-                _host.PhraseInserted(phrase.Id);
+                _host.PhraseInserted(phrase.Id, TypingSavings.HotkeyCharacters);
             }
 
             return OperationOutcome.None;
@@ -435,7 +437,7 @@ public sealed partial class ExpansionEngine : IInputSequencerSink, IDisposable
                 return Abandon(place, phrase);
         }
 
-        _host.PhraseInserted(phrase.Id);
+        _host.PhraseInserted(phrase.Id, TypingSavings.HotkeyCharacters);
         if (result == PasteOutcome.TimedOut)
         {
             _host.Notify(new ExpansionNotice(ExpansionNoticeKind.PasteNotConfirmed, phrase.Description));

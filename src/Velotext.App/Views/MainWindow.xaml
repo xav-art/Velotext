@@ -95,12 +95,35 @@
           <ColumnDefinition Width="Auto" />
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE8A5;" FontSize="14" Foreground="{DynamicResource TextFillColorTertiaryBrush}" Margin="0,0,8,0" />
         <TextBlock Grid.Column="1" Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" />
         <TextBlock Grid.Column="2" Style="{StaticResource TreeTriggerText}" Text="{Binding TriggerSummary}" />
+        <TextBlock Grid.Column="3" Text="{Binding UsesText}" ToolTip="{Binding UsesToolTip}" MinWidth="24" Margin="4,0,4,0"
+                   VerticalAlignment="Center" TextAlignment="Right" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular"
+                   FontSize="{StaticResource Velotext.CaptionSize}" Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                   Visibility="{Binding UsesText, Converter={StaticResource VisibleWhenSet}}" />
       </Grid>
     </DataTemplate>
+
+    <Style x:Key="DashboardNumber" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="24" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Typography.NumeralAlignment" Value="Tabular" />
+    </Style>
+    <Style x:Key="DashboardLabel" TargetType="TextBlock">
+      <Setter Property="Margin" Value="0,2,0,0" />
+      <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+    </Style>
+    <Style x:Key="DashboardRow" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
   </Window.Resources>
 
   <Window.InputBindings>
@@ -296,11 +319,105 @@
         <Grid>
           <!-- Empty state -->
           <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="360"
-                      Visibility="{Binding EditorPhrase, Converter={StaticResource VisibleWhenNull}}">
+                      Visibility="{Binding IsEmptyEditorVisible, Converter={StaticResource Visible}}">
             <TextBlock Text="{Binding EmptyEditorTitle}" FontSize="{StaticResource Velotext.TitleSize}" FontWeight="SemiBold" TextAlignment="Center" TextWrapping="Wrap" />
             <TextBlock Text="{Binding EmptyEditorMessage}" Margin="0,8,0,16" TextAlignment="Center" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
             <Button Content="New phrase" HorizontalAlignment="Center" Padding="16,4" Command="{Binding NewPhraseCommand}" />
           </StackPanel>
+
+          <!-- Usage dashboard: shown while "Most used" is selected -->
+          <ScrollViewer x:Name="DashboardScroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsTabStop="False"
+                        Padding="24,16,24,16"
+                        Visibility="{Binding IsDashboardVisible, Converter={StaticResource Visible}}">
+            <StackPanel DataContext="{Binding Dashboard}" MaxWidth="760" HorizontalAlignment="Stretch">
+              <TextBlock Text="Usage in the last 30 days" FontSize="{StaticResource Velotext.TitleSize}" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding RangeText}" Margin="0,4,0,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+              <TextBlock Margin="0,24,0,0" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                         Text="You did not insert a phrase in the last 30 days. When you type a trigger or press a hotkey, the use shows here."
+                         Visibility="{Binding HasUsage, Converter={StaticResource Hidden}}" />
+
+              <StackPanel Visibility="{Binding HasUsage, Converter={StaticResource Visible}}">
+                <!-- Totals -->
+                <UniformGrid Columns="3" Margin="0,24,0,0">
+                  <StackPanel>
+                    <TextBlock Style="{StaticResource DashboardNumber}" Text="{Binding UsesText}" />
+                    <TextBlock Style="{StaticResource DashboardLabel}" Text="{Binding UsesLabel}" />
+                  </StackPanel>
+                  <StackPanel>
+                    <TextBlock Style="{StaticResource DashboardNumber}" Text="{Binding CharactersText}" />
+                    <TextBlock Style="{StaticResource DashboardLabel}" Text="characters saved" />
+                  </StackPanel>
+                  <StackPanel>
+                    <TextBlock Style="{StaticResource DashboardNumber}" Text="{Binding TimeText}" />
+                    <TextBlock Style="{StaticResource DashboardLabel}" Text="typing time saved" />
+                  </StackPanel>
+                </UniformGrid>
+                <TextBlock Style="{StaticResource Velotext.Hint}" Margin="0,8,0,0" Text="{x:Static vm:UsageDashboardViewModel.TimeNote}" />
+
+                <!-- Insertions per day -->
+                <TextBlock Style="{StaticResource Velotext.SectionLabel}" Text="Insertions per day" Margin="0,32,0,8" />
+                <Border x:Name="DailyChart" BorderBrush="{DynamicResource Velotext.StrokeSubtle}" BorderThickness="0,0,0,1"
+                        AutomationProperties.Name="{Binding ChartSummary}">
+                  <ItemsControl ItemsSource="{Binding Days}" Height="{x:Static vm:UsageDashboardViewModel.ChartHeight}" Focusable="False" IsTabStop="False">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <UniformGrid Rows="1" />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border Background="Transparent" ToolTip="{Binding ToolTip}">
+                          <Border Height="{Binding Height}" VerticalAlignment="Bottom" Margin="2,0,2,0" CornerRadius="2,2,0,0"
+                                  Background="{DynamicResource AccentFillColorDefaultBrush}" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Border>
+                <Grid Margin="0,4,0,0">
+                  <TextBlock Style="{StaticResource Velotext.Hint}" Text="{Binding FirstDayText}" HorizontalAlignment="Left" />
+                  <TextBlock Style="{StaticResource Velotext.Hint}" Text="Today" HorizontalAlignment="Right" />
+                </Grid>
+
+                <!-- Phrases -->
+                <Grid Margin="8,32,8,4">
+                  <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="80" />
+                    <ColumnDefinition Width="140" />
+                  </Grid.ColumnDefinitions>
+                  <TextBlock Style="{StaticResource Velotext.SectionLabel}" Text="Phrase" Margin="0" />
+                  <TextBlock Grid.Column="1" Style="{StaticResource Velotext.SectionLabel}" Text="Uses" Margin="0" TextAlignment="Right" />
+                  <TextBlock Grid.Column="2" Style="{StaticResource Velotext.SectionLabel}" Text="Characters saved" Margin="0" TextAlignment="Right" />
+                </Grid>
+                <ItemsControl ItemsSource="{Binding Rows}" IsTabStop="False" AutomationProperties.Name="Phrases used in the last 30 days">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Button Style="{StaticResource DashboardRow}"
+                              Command="{Binding DataContext.OpenPhraseCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                              CommandParameter="{Binding Phrase}"
+                              AutomationProperties.Name="{Binding AccessibleName}" ToolTip="Open the phrase">
+                        <Grid>
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="80" />
+                            <ColumnDefinition Width="140" />
+                          </Grid.ColumnDefinitions>
+                          <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource TreeTriggerText}" Text="{Binding Trigger}" />
+                          </StackPanel>
+                          <TextBlock Grid.Column="1" Text="{Binding Uses}" TextAlignment="Right" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                          <TextBlock Grid.Column="2" Text="{Binding CharactersSaved}" TextAlignment="Right" VerticalAlignment="Center" Typography.NumeralAlignment="Tabular" />
+                        </Grid>
+                      </Button>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
 
           <!-- Phrase editor: fills the panel, and scrolls when the window is too short -->
           <ScrollViewer x:Name="EditorScroller" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsTabStop="False"

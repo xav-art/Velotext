@@ -294,7 +294,7 @@ public sealed class StorageTests : IDisposable
         var store = new JsonFileStore<UsageData>(Path.Combine(_dir, "usage.json"), VelotextJsonContext.Default.UsageData, null, _time);
         var tracker = new UsageTracker();
         var id = Guid.NewGuid();
-        tracker.RecordUse(id, Build.Now);
+        tracker.RecordUse(id, Build.Now, 42);
 
         store.Save(tracker.Snapshot());
 
@@ -304,6 +304,7 @@ public sealed class StorageTests : IDisposable
         var loaded = store.Load().Value!;
         Assert.Equal(UsageData.CurrentSchemaVersion, loaded.SchemaVersion);
         Assert.Equal(1, loaded.Phrases[id].Days[new DateOnly(2026, 10, 10)]);
+        Assert.Equal(42, loaded.Phrases[id].Saved[new DateOnly(2026, 10, 10)]);
     }
 
     [Fact]

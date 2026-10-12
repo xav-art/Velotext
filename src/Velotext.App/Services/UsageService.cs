@@ -1,4 +1,4 @@
-// Velotext: records which phrases were inserted and when, for "Recently used", "Most used" and the 30-day count.
+// Velotext: records which phrases were inserted, when, and the characters they saved, for "Recently used", "Most used" and the dashboard.
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using Microsoft.Extensions.Logging;
@@ -45,7 +45,11 @@ public sealed partial class UsageService : IDisposable
     public UsageTracker Tracker { get; private set; }
 
     /// <summary>Loads usage.json; a missing or damaged file starts empty.</summary>
-    public void Load()
+    /// <param name="savedPerUse">
+    /// The characters one use of a phrase saves today, to estimate days stored before the characters saved were
+    /// measured; <c>null</c> leaves them at zero.
+    /// </param>
+    public void Load(Func<Guid, int>? savedPerUse = null)
     {
         var result = _store.Load();
 
@@ -56,7 +60,7 @@ public sealed partial class UsageService : IDisposable
             LogUsageUnavailable(_logger);
         }
 
-        Tracker = new UsageTracker(result.Value);
+        Tracker = new UsageTracker(result.Value, savedPerUse);
         Tracker.Changed += (_, _) =>
         {
             _saver.Request();
@@ -92,7 +96,12 @@ public sealed partial class UsageService : IDisposable
 
     /// <summary>Records one use of a phrase now.</summary>
     /// <param name="phraseId">The phrase.</param>
-    public void RecordUse(Guid phraseId) => Tracker.RecordUse(phraseId, _time.GetUtcNow());
+    /// <param name="charactersSaved">Characters the use saved.</param>
+    public void RecordUse(Guid phraseId, int charactersSaved = 0) => Tracker.RecordUse(phraseId, _time.GetUtcNow(), charactersSaved);
+
+    /// <summary>Returns the usage of the last 30 days for the dashboard.</summary>
+    /// <param name="exists">Filter that keeps only phrases that still exist.</param>
+    public UsageReport Report(Func<Guid, bool> exists) => Tracker.Report(_time.GetUtcNow(), exists);
 
     /// <summary>Saves pending changes and stops the timers.</summary>
     public void Dispose()

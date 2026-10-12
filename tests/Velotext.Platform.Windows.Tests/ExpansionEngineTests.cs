@@ -100,6 +100,7 @@ public sealed class ExpansionEngineTests : IDisposable
         Assert.Equal(0, _clipboard.Restores);
         await WaitUntil(() => _clipboard.Restores == 1);
         Assert.Equal([_formatted.Id], _host.Inserted);
+        Assert.Equal([4], _host.TypedCharacters);
 
         // Backspace right away undoes: Ctrl+Z, then the trigger is typed back.
         Assert.Equal(KeyDecision.Swallow, await Key('\b', vk: 0x08));
@@ -248,6 +249,7 @@ public sealed class ExpansionEngineTests : IDisposable
         await _engine.InsertFromHotkeyAsync(_plain.Id);
         await WaitForCompletion();
         Assert.Equal(["chord 11+56", "release 11"], _injector.Calls);
+        Assert.Equal([1], _host.TypedCharacters);
 
         _sequencer.Enabled = false;
         await _engine.InsertFromHotkeyAsync(_plain.Id);
@@ -267,6 +269,7 @@ public sealed class ExpansionEngineTests : IDisposable
 
         Assert.Single(_clipboard.Copied);
         Assert.Equal(ExpansionNoticeKind.CopiedToClipboard, Assert.Single(_host.Notices).Kind);
+        Assert.Equal([1], _host.TypedCharacters);
     }
 
     [Fact]
@@ -419,6 +422,7 @@ public sealed class ExpansionEngineTests : IDisposable
         Assert.Equal(["backspace x3", "chord 11+56", "release 11"], _injector.Calls);
         Assert.Equal(ExpansionNoticeKind.DelimiterSkipped, Assert.Single(_host.Notices).Kind);
         Assert.Equal([_plain.Id], _host.Inserted);
+        Assert.Equal([3], _host.TypedCharacters);
     }
 
     [Fact]

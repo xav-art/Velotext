@@ -294,6 +294,118 @@ public sealed class MainViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Most_used_rows_show_their_count_and_update_it_in_place()
+    {
+        using var vm = _env.CreateMainViewModel();
+        var phrase = FirstFolder(vm).Children.OfType<PhraseViewModel>().First();
+
+        _env.Usage.RecordUse(phrase.Id, 30);
+        var row = Assert.IsType<ShortcutViewModel>(Assert.Single(vm.MostUsed.Items));
+        Assert.Equal(1, row.Uses);
+        Assert.Equal("1", row.UsesText);
+        Assert.Equal("Used once in the last 30 days", row.UsesToolTip);
+        Assert.Equal(phrase.DisplayName + ", Used once in the last 30 days", row.AccessibleName);
+
+        var changed = new List<string?>();
+        row.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+        _env.Usage.RecordUse(phrase.Id, 30);
+        Assert.Same(row, vm.MostUsed.Items[0]);
+        Assert.Equal("Used 2 times in the last 30 days", row.UsesToolTip);
+        Assert.Contains(nameof(ShortcutViewModel.UsesText), changed);
+
+        // "Recently used" shows no count.
+        var recent = Assert.IsType<ShortcutViewModel>(Assert.Single(vm.Recent.Items));
+        Assert.Null(recent.Uses);
+        Assert.Equal(string.Empty, recent.UsesText);
+        Assert.Null(recent.UsesToolTip);
+        Assert.Equal(phrase.DisplayName, recent.AccessibleName);
+
+        phrase.Description = "Renamed";
+        Assert.Equal("Renamed, Used 2 times in the last 30 days", row.AccessibleName);
+    }
+
+    [Fact]
+    public void Selecting_most_used_shows_the_dashboard_and_a_row_opens_its_phrase()
+    {
+        using var vm = _env.CreateMainViewModel();
+        var phrase = FirstFolder(vm).Children.OfType<PhraseViewModel>().First();
+        Assert.True(vm.IsEmptyEditorVisible);
+        Assert.False(vm.IsDashboardVisible);
+
+        vm.SelectedNode = vm.MostUsed;
+        Assert.True(vm.IsDashboardVisible);
+        Assert.False(vm.IsEmptyEditorVisible);
+        Assert.False(vm.Dashboard.HasUsage);
+        Assert.Equal("Insertions per day: none in the last 30 days.", vm.Dashboard.ChartSummary);
+        Assert.Equal(30, vm.Dashboard.Days.Count);
+
+        _env.Usage.RecordUse(phrase.Id, 150);
+        _env.Usage.RecordUse(phrase.Id, 250);
+
+        var dashboard = vm.Dashboard;
+        Assert.True(dashboard.HasUsage);
+        Assert.Equal("2", dashboard.UsesText);
+        Assert.Equal("insertions", dashboard.UsesLabel);
+        Assert.Equal("400", dashboard.CharactersText);
+        Assert.Equal("2 min", dashboard.TimeText);
+        Assert.EndsWith(DateTimeOffset.UtcNow.ToString("d MMM yyyy", System.Globalization.CultureInfo.InvariantCulture), dashboard.RangeText, StringComparison.Ordinal);
+        Assert.Equal(UsageDashboardViewModel.ChartHeight, dashboard.Days[^1].Height);
+        Assert.Equal(0, dashboard.Days[0].Height);
+        Assert.EndsWith(": 2 insertions, 400 characters saved", dashboard.Days[^1].ToolTip, StringComparison.Ordinal);
+        Assert.Contains("with 2 insertions.", dashboard.ChartSummary, StringComparison.Ordinal);
+        Assert.Equal("Time saved is an estimate at 200 characters a minute.", UsageDashboardViewModel.TimeNote);
+        var row = Assert.Single(dashboard.Rows);
+        Assert.Same(phrase, row.Phrase);
+        Assert.Equal(phrase.DisplayName, row.Name);
+        Assert.Equal(phrase.TriggerSummary, row.Trigger);
+        Assert.Equal("2", row.Uses);
+        Assert.Equal("400", row.CharactersSaved);
+        Assert.Equal(phrase.DisplayName + ": 2 insertions, 400 characters saved. Open the phrase.", row.AccessibleName);
+
+        TreeNodeViewModel? focused = null;
+        vm.FocusNodeRequested += (_, node) => focused = node;
+        vm.OpenPhraseCommand.Execute(row.Phrase);
+        Assert.Same(phrase, vm.SelectedNode);
+        Assert.Same(phrase, focused);
+        Assert.False(vm.IsDashboardVisible);
+
+        // Nothing happens for a phrase that is no longer in the library, or for none.
+        vm.OpenPhraseCommand.Execute(null);
+        var gone = new Phrase { Id = Guid.NewGuid(), Description = "Gone", CreatedUtc = DateTimeOffset.UtcNow, ModifiedUtc = DateTimeOffset.UtcNow };
+        vm.OpenPhraseCommand.Execute(new PhraseViewModel(gone, new EditContext(() => { }, () => new Core.Settings.TriggerDefaults(), TimeProvider.System)));
+        Assert.Same(phrase, vm.SelectedNode);
+    }
+
+    [Theory]
+    [InlineData(0, "0 min")]
+    [InlineData(20, "Under 1 min")]
+    [InlineData(150, "3 min")]
+    [InlineData(3600, "1 h")]
+    [InlineData(4830, "1 h 21 min")]
+    public void Dashboard_formats_time_saved(int seconds, string expected) =>
+        Assert.Equal(expected, UsageDashboardViewModel.FormatTime(TimeSpan.FromSeconds(seconds)));
+
+    [Fact]
+    public void Usage_service_estimates_characters_saved_for_older_files()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero));
+        var id = Guid.NewGuid();
+        File.WriteAllText(_env.Paths.UsageFile, $$"""
+            { "schemaVersion": 2, "phrases": { "{{id}}": { "lastUsedUtc": "2026-10-12T08:00:00+00:00", "days": { "2026-10-12": 3 } } } }
+            """);
+        using var usage = new UsageService(_env.Paths, clock, Microsoft.Extensions.Logging.Abstractions.NullLogger<UsageService>.Instance);
+
+        usage.Load(phraseId => phraseId == id ? 50 : 0);
+        usage.RecordUse(id, 20);
+
+        var report = usage.Report(_ => true);
+        Assert.Equal(4, report.TotalUses);
+        Assert.Equal(170, report.TotalCharactersSaved);
+        usage.Dispose();
+        Assert.Contains("\"2026-10-12\": 170", File.ReadAllText(_env.Paths.UsageFile), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Usage_service_migrates_old_files_and_deletes_expired_days()
     {
         var clock = new ManualClock(new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero));

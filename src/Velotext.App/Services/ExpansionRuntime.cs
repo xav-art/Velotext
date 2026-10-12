@@ -8,6 +8,7 @@ using Velotext.Core.Matching;
 using Velotext.Core.Model;
 using Velotext.Core.RichText;
 using Velotext.Core.Settings;
+using Velotext.Core.Usage;
 using Velotext.Platform.Windows.Clipboard;
 using Velotext.Platform.Windows.Expansion;
 using Velotext.Platform.Windows.Hotkeys;
@@ -173,7 +174,8 @@ public sealed partial class ExpansionRuntime : IExpansionHost, ViewModels.IPause
     public Phrase? FindPhrase(Guid id) => _library.Snapshot.Phrases.GetValueOrDefault(id);
 
     /// <inheritdoc />
-    public void PhraseInserted(Guid id) => _usage.RecordUse(id);
+    public void PhraseInserted(Guid id, int typedCharacters) =>
+        _usage.RecordUse(id, FindPhrase(id) is { } phrase ? TypingSavings.CharactersSaved(phrase.Content, typedCharacters) : 0);
 
     /// <inheritdoc />
     public void Notify(ExpansionNotice notice)

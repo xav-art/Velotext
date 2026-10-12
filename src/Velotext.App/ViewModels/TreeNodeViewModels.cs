@@ -4,6 +4,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Velotext.Core.Model;
@@ -505,6 +506,8 @@ public sealed class ShortcutHintViewModel(string text) : TreeNodeViewModel
 /// <summary>A shortcut in "Recently used" or "Most used" to a phrase in the library.</summary>
 public sealed class ShortcutViewModel : TreeNodeViewModel, IDisposable
 {
+    private int? _uses;
+
     /// <summary>Creates the shortcut.</summary>
     /// <param name="target">The phrase it points to.</param>
     public ShortcutViewModel(PhraseViewModel target)
@@ -521,6 +524,7 @@ public sealed class ShortcutViewModel : TreeNodeViewModel, IDisposable
         if (e.PropertyName is nameof(PhraseViewModel.DisplayName) or nameof(PhraseViewModel.TriggerSummary))
         {
             OnPropertyChanged(e.PropertyName);
+            OnPropertyChanged(nameof(AccessibleName));
         }
     }
 
@@ -535,6 +539,35 @@ public sealed class ShortcutViewModel : TreeNodeViewModel, IDisposable
 
     /// <summary>The phrase's first trigger.</summary>
     public string TriggerSummary => Target.TriggerSummary;
+
+    /// <summary>Insertions in the last 30 days, shown in "Most used"; <c>null</c> in "Recently used".</summary>
+    public int? Uses
+    {
+        get => _uses;
+        set
+        {
+            if (SetProperty(ref _uses, value))
+            {
+                OnPropertyChanged(nameof(UsesText));
+                OnPropertyChanged(nameof(UsesToolTip));
+                OnPropertyChanged(nameof(AccessibleName));
+            }
+        }
+    }
+
+    /// <summary>The number shown at the end of the row, or empty.</summary>
+    public string UsesText => Uses?.ToString("N0", CultureInfo.InvariantCulture) ?? string.Empty;
+
+    /// <summary>Tooltip of the number, for example "Used 12 times in the last 30 days".</summary>
+    public string? UsesToolTip => Uses switch
+    {
+        null => null,
+        1 => "Used once in the last 30 days",
+        var n => string.Create(CultureInfo.InvariantCulture, $"Used {n:N0} times in the last 30 days"),
+    };
+
+    /// <inheritdoc />
+    public override string AccessibleName => Uses is null ? DisplayName : $"{DisplayName}, {UsesToolTip}";
 
     /// <inheritdoc />
     public override bool IsReadOnly => true;

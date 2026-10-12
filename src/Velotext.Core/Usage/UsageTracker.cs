@@ -1,11 +1,11 @@
-// Velotext: tracks when each phrase was last inserted and how often in the last 30 days.
+// Velotext: tracks when each phrase was last inserted, and how often and how many characters it saved in 30 days.
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using System.Text.Json.Serialization;
 
 namespace Velotext.Core.Usage;
 
-/// <summary>When a phrase was last inserted and how often on each recent day.</summary>
+/// <summary>When a phrase was last inserted, and how often and how many characters it saved on each recent day.</summary>
 public sealed record PhraseUsage
 {
     /// <summary>Last insertion time (UTC), for the "Recently used" folder.</summary>
@@ -13,6 +13,13 @@ public sealed record PhraseUsage
 
     /// <summary>Insertions per UTC day. Only days inside the usage window are kept. Never null: a file without it reads as empty.</summary>
     public IReadOnlyDictionary<DateOnly, int> Days
+    {
+        get;
+        init => field = value ?? new Dictionary<DateOnly, int>();
+    } = new Dictionary<DateOnly, int>();
+
+    /// <summary>Characters saved per UTC day (phrase characters minus trigger characters, summed). Never null.</summary>
+    public IReadOnlyDictionary<DateOnly, int> Saved
     {
         get;
         init => field = value ?? new Dictionary<DateOnly, int>();
@@ -28,8 +35,11 @@ public sealed record PhraseUsage
 /// <summary>Stored usage data (usage.json). Kept apart from the library so inserting never rewrites phrases.</summary>
 public sealed record UsageData
 {
-    /// <summary>Schema version written by this build: 2 added per-day counts and dropped the all-time total.</summary>
-    public const int CurrentSchemaVersion = 2;
+    /// <summary>
+    /// Schema version written by this build: 2 added per-day counts and dropped the all-time total; 3 added the
+    /// characters saved per day.
+    /// </summary>
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>Schema version of the stored file.</summary>
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
@@ -42,9 +52,34 @@ public sealed record UsageData
     } = new Dictionary<Guid, PhraseUsage>();
 }
 
+/// <summary>Insertions and characters saved on one day of the window.</summary>
+/// <param name="Day">The UTC day.</param>
+/// <param name="Uses">Insertions on that day.</param>
+/// <param name="CharactersSaved">Characters saved on that day.</param>
+public sealed record DailyUsage(DateOnly Day, long Uses, long CharactersSaved);
+
+/// <summary>Insertions and characters saved by one phrase in the window.</summary>
+/// <param name="PhraseId">The phrase.</param>
+/// <param name="Uses">Insertions in the window.</param>
+/// <param name="CharactersSaved">Characters saved in the window.</param>
+/// <param name="LastUsedUtc">Last insertion time.</param>
+public sealed record PhraseTotals(Guid PhraseId, int Uses, long CharactersSaved, DateTimeOffset LastUsedUtc);
+
+/// <summary>Usage in the window that ends today.</summary>
+/// <param name="Days">Every day of the window, oldest first, including days without use.</param>
+/// <param name="Phrases">Phrases used in the window, most used first.</param>
+public sealed record UsageReport(IReadOnlyList<DailyUsage> Days, IReadOnlyList<PhraseTotals> Phrases)
+{
+    /// <summary>Insertions in the window.</summary>
+    public long TotalUses => Days.Sum(d => d.Uses);
+
+    /// <summary>Characters saved in the window.</summary>
+    public long TotalCharactersSaved => Days.Sum(d => d.CharactersSaved);
+}
+
 /// <summary>
-/// Thread-safe record of phrase insertions. It keeps the last use of each phrase and one count per UTC
-/// day for the last <see cref="WindowDays"/> days; older days are deleted by <see cref="Trim"/>.
+/// Thread-safe record of phrase insertions. It keeps the last use of each phrase and, per UTC day for the last
+/// <see cref="WindowDays"/> days, the insertions and the characters saved; older days are deleted by <see cref="Trim"/>.
 /// </summary>
 public sealed class UsageTracker
 {
@@ -54,31 +89,39 @@ public sealed class UsageTracker
     private readonly Lock _gate = new();
     private readonly Dictionary<Guid, Entry> _usage = [];
 
-    /// <summary>Creates a tracker from stored data, dropping counts below 1.</summary>
+    /// <summary>Creates a tracker from stored data, dropping values below 1.</summary>
     /// <param name="data">Previously stored usage, or <c>null</c> for none.</param>
-    public UsageTracker(UsageData? data = null)
+    /// <param name="savedPerUse">
+    /// For files older than schema 3: the characters one use of a phrase saves today, to estimate the days stored
+    /// without them. <c>null</c> leaves those days at zero.
+    /// </param>
+    public UsageTracker(UsageData? data = null, Func<Guid, int>? savedPerUse = null)
     {
         if (data is null)
         {
             return;
         }
 
-        var legacy = data.SchemaVersion < 2;
         foreach (var (id, stored) in data.Phrases)
         {
             var entry = new Entry(stored.LastUsedUtc);
-            foreach (var (day, count) in stored.Days)
-            {
-                if (count > 0)
-                {
-                    entry.Days[day] = count;
-                }
-            }
+            CopyPositive(stored.Days, entry.Days);
+            CopyPositive(stored.Saved, entry.Saved);
 
             // Schema 1 kept only an all-time total: it moves to the day of the last use.
-            if (legacy && stored.LegacyUseCount is int total && total > 0)
+            if (data.SchemaVersion < 2 && stored.LegacyUseCount is int total && total > 0)
             {
                 entry.Days[DayOf(stored.LastUsedUtc)] = total;
+            }
+
+            // Before schema 3 nothing measured the characters saved: estimate them from today's text.
+            if (data.SchemaVersion < 3 && savedPerUse is not null)
+            {
+                var perUse = Math.Max(0, savedPerUse(id));
+                foreach (var (day, uses) in entry.Days)
+                {
+                    entry.Saved[day] = Clamp((long)uses * perUse);
+                }
             }
 
             _usage[id] = entry;
@@ -95,7 +138,8 @@ public sealed class UsageTracker
     /// <summary>Records one insertion of a phrase.</summary>
     /// <param name="phraseId">The inserted phrase.</param>
     /// <param name="now">Insertion time.</param>
-    public void RecordUse(Guid phraseId, DateTimeOffset now)
+    /// <param name="charactersSaved">Characters the insertion saved (values below zero count as zero).</param>
+    public void RecordUse(Guid phraseId, DateTimeOffset now, int charactersSaved = 0)
     {
         var day = DayOf(now);
         lock (_gate)
@@ -107,8 +151,11 @@ public sealed class UsageTracker
             }
 
             entry.LastUsedUtc = now;
-            var count = entry.Days.GetValueOrDefault(day);
-            entry.Days[day] = count == int.MaxValue ? count : count + 1;
+            entry.Days[day] = Clamp((long)entry.Days.GetValueOrDefault(day) + 1);
+            if (charactersSaved > 0)
+            {
+                entry.Saved[day] = Clamp((long)entry.Saved.GetValueOrDefault(day) + charactersSaved);
+            }
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
@@ -122,7 +169,7 @@ public sealed class UsageTracker
         var (first, last) = Window(now);
         lock (_gate)
         {
-            return _usage.TryGetValue(phraseId, out var entry) ? Sum(entry, first, last) : 0;
+            return _usage.TryGetValue(phraseId, out var entry) ? Clamp(Sum(entry.Days, first, last)) : 0;
         }
     }
 
@@ -138,31 +185,57 @@ public sealed class UsageTracker
         }
     }
 
-    /// <summary>Returns the phrase ids used most in the window, most used first, then most recent first.</summary>
+    /// <summary>Returns the phrases used most in the window, most used first, then most recent first.</summary>
     /// <param name="count">How many to return.</param>
     /// <param name="now">The current time.</param>
     /// <param name="exists">Filter that keeps only phrases that still exist.</param>
-    public IReadOnlyList<Guid> MostUsed(int count, DateTimeOffset now, Func<Guid, bool> exists)
+    public IReadOnlyList<Guid> MostUsed(int count, DateTimeOffset now, Func<Guid, bool> exists) =>
+        [.. Report(now, exists).Phrases.Take(count).Select(p => p.PhraseId)];
+
+    /// <summary>
+    /// Returns the usage of the window that ends today: every day, and every phrase used in it (most used first,
+    /// then most characters saved, then most recent). Phrases that no longer exist are left out.
+    /// </summary>
+    /// <param name="now">The current time.</param>
+    /// <param name="exists">Filter that keeps only phrases that still exist.</param>
+    public UsageReport Report(DateTimeOffset now, Func<Guid, bool> exists)
     {
         ArgumentNullException.ThrowIfNull(exists);
         var (first, last) = Window(now);
+        var uses = new long[WindowDays];
+        var saved = new long[WindowDays];
+        var phrases = new List<PhraseTotals>();
         lock (_gate)
         {
-            return
-            [
-                .. _usage
-                    .Where(u => exists(u.Key))
-                    .Select(u => (u.Key, Uses: Sum(u.Value, first, last), u.Value.LastUsedUtc))
-                    .Where(u => u.Uses > 0)
-                    .OrderByDescending(u => u.Uses)
-                    .ThenByDescending(u => u.LastUsedUtc)
-                    .Take(count)
-                    .Select(u => u.Key),
-            ];
+            foreach (var (id, entry) in _usage)
+            {
+                if (!exists(id))
+                {
+                    continue;
+                }
+
+                var phraseUses = Sum(entry.Days, first, last);
+                if (phraseUses == 0)
+                {
+                    continue;
+                }
+
+                phrases.Add(new PhraseTotals(id, Clamp(phraseUses), Sum(entry.Saved, first, last), entry.LastUsedUtc));
+                AddByDay(entry.Days, first, last, uses);
+                AddByDay(entry.Saved, first, last, saved);
+            }
         }
+
+        var days = Enumerable.Range(0, WindowDays).Select(i => new DailyUsage(first.AddDays(i), uses[i], saved[i])).ToList();
+        var ordered = phrases
+            .OrderByDescending(p => p.Uses)
+            .ThenByDescending(p => p.CharactersSaved)
+            .ThenByDescending(p => p.LastUsedUtc)
+            .ToList();
+        return new UsageReport(days, ordered);
     }
 
-    /// <summary>Deletes day counts outside the window: older days, and days after today (a clock set back).</summary>
+    /// <summary>Deletes day values outside the window: older days, and days after today (a clock set back).</summary>
     /// <param name="now">The current time.</param>
     /// <returns>True when anything was deleted.</returns>
     public bool Trim(DateTimeOffset now)
@@ -173,11 +246,8 @@ public sealed class UsageTracker
         {
             foreach (var entry in _usage.Values)
             {
-                foreach (var day in entry.Days.Keys.Where(d => d < first || d > last).ToList())
-                {
-                    entry.Days.Remove(day);
-                    removed = true;
-                }
+                removed |= RemoveOutside(entry.Days, first, last);
+                removed |= RemoveOutside(entry.Saved, first, last);
             }
         }
 
@@ -207,7 +277,12 @@ public sealed class UsageTracker
             {
                 Phrases = _usage.ToDictionary(
                     u => u.Key,
-                    u => new PhraseUsage { LastUsedUtc = u.Value.LastUsedUtc, Days = new Dictionary<DateOnly, int>(u.Value.Days) }),
+                    u => new PhraseUsage
+                    {
+                        LastUsedUtc = u.Value.LastUsedUtc,
+                        Days = new Dictionary<DateOnly, int>(u.Value.Days),
+                        Saved = new Dictionary<DateOnly, int>(u.Value.Saved),
+                    }),
             };
         }
     }
@@ -218,18 +293,53 @@ public sealed class UsageTracker
         return (today.AddDays(1 - WindowDays), today);
     }
 
-    private static int Sum(Entry entry, DateOnly first, DateOnly last)
+    private static int Clamp(long value) => (int)Math.Clamp(value, 0, int.MaxValue);
+
+    private static void CopyPositive(IReadOnlyDictionary<DateOnly, int> from, Dictionary<DateOnly, int> to)
+    {
+        foreach (var (day, value) in from)
+        {
+            if (value > 0)
+            {
+                to[day] = value;
+            }
+        }
+    }
+
+    private static long Sum(Dictionary<DateOnly, int> values, DateOnly first, DateOnly last)
     {
         long total = 0;
-        foreach (var (day, count) in entry.Days)
+        foreach (var (day, value) in values)
         {
             if (day >= first && day <= last)
             {
-                total += count;
+                total += value;
             }
         }
 
-        return (int)Math.Min(total, int.MaxValue);
+        return total;
+    }
+
+    private static void AddByDay(Dictionary<DateOnly, int> values, DateOnly first, DateOnly last, long[] totals)
+    {
+        foreach (var (day, value) in values)
+        {
+            if (day >= first && day <= last)
+            {
+                totals[day.DayNumber - first.DayNumber] += value;
+            }
+        }
+    }
+
+    private static bool RemoveOutside(Dictionary<DateOnly, int> values, DateOnly first, DateOnly last)
+    {
+        var outside = values.Keys.Where(d => d < first || d > last).ToList();
+        foreach (var day in outside)
+        {
+            values.Remove(day);
+        }
+
+        return outside.Count > 0;
     }
 
     /// <summary>Mutable usage of one phrase, guarded by the tracker's lock.</summary>
@@ -239,5 +349,7 @@ public sealed class UsageTracker
         public DateTimeOffset LastUsedUtc { get; set; } = lastUsedUtc;
 
         public Dictionary<DateOnly, int> Days { get; } = [];
+
+        public Dictionary<DateOnly, int> Saved { get; } = [];
     }
 }

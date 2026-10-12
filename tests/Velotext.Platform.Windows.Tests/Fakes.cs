@@ -187,11 +187,17 @@ internal sealed class FakeHost : IExpansionHost
 
     public ConcurrentQueue<Guid> Inserted { get; } = new();
 
+    public ConcurrentQueue<int> TypedCharacters { get; } = new();
+
     public ExpansionSettings Settings { get; set; } = new(UndoWithBackspace: true, TimeSpan.FromMilliseconds(200), RtfOptions.Default);
 
     public Phrase? FindPhrase(Guid id) => Phrases.GetValueOrDefault(id);
 
-    public void PhraseInserted(Guid id) => Inserted.Enqueue(id);
+    public void PhraseInserted(Guid id, int typedCharacters)
+    {
+        TypedCharacters.Enqueue(typedCharacters);
+        Inserted.Enqueue(id);
+    }
 
     public void Notify(ExpansionNotice notice) => Notices.Enqueue(notice);
 }

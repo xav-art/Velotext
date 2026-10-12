@@ -99,10 +99,14 @@ public sealed class UiRenderTests : IDisposable
                 vm.SelectedNode = phrase;
                 phrase.AddHotkeyTriggerCommand.Execute(null);
                 vm.CommitNow();
-                _env.Usage.RecordUse(phrase.Id);
-                _env.Usage.RecordUse(phrase.Id);
+                _env.Usage.RecordUse(phrase.Id, 120);
+                _env.Usage.RecordUse(phrase.Id, 120);
                 Assert.Equal("Used 2 times in the last 30 days", vm.EditorUsageText);
                 Snapshot(window, $"main-{theme}-phrase");
+
+                vm.SelectedNode = vm.MostUsed;
+                Assert.True(vm.Dashboard.HasUsage);
+                Snapshot(window, $"main-{theme}-dashboard");
 
                 vm.SearchText = "no such phrase";
                 vm.Banner = "The phrase file was damaged. Velotext loaded your most recent backup.";
