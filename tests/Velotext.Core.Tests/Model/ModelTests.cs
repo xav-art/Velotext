@@ -1,11 +1,10 @@
-// Velotext: tests for the library model, hotkey gestures, settings, search and usage tracking.
+// Velotext: tests for the library model, hotkey gestures, settings and search.
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using Velotext.Core.Model;
 using Velotext.Core.RichText;
 using Velotext.Core.Search;
 using Velotext.Core.Settings;
-using Velotext.Core.Usage;
 
 namespace Velotext.Core.Tests.Model;
 
@@ -115,32 +114,6 @@ public sealed class ModelTests
         };
 
         Assert.Equal(expected, PhraseSearch.Matches(phrase, PhraseSearch.Tokenize(query)));
-    }
-
-    [Fact]
-    public void Usage_tracker_orders_by_recency_counts_and_prunes()
-    {
-        var tracker = new UsageTracker();
-        var changes = 0;
-        tracker.Changed += (_, _) => changes++;
-        var a = Guid.NewGuid();
-        var b = Guid.NewGuid();
-        var gone = Guid.NewGuid();
-
-        tracker.RecordUse(a, Build.Now);
-        tracker.RecordUse(b, Build.Now.AddMinutes(1));
-        tracker.RecordUse(gone, Build.Now.AddMinutes(2));
-        tracker.RecordUse(a, Build.Now.AddMinutes(3));
-
-        Assert.Equal([a, b], tracker.MostRecent(5, id => id != gone));
-        Assert.Equal(4, changes);
-
-        tracker.Prune(new HashSet<Guid> { a });
-        var snapshot = tracker.Snapshot();
-        Assert.Equal(2, Assert.Single(snapshot.Phrases).Value.UseCount);
-
-        var restored = new UsageTracker(snapshot);
-        Assert.Equal([a], restored.MostRecent(1, _ => true));
     }
 
     [Theory]

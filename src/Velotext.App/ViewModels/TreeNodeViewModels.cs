@@ -1,4 +1,4 @@
-// Velotext: view models for the phrase tree (folders, phrases, the "Recently used" folder).
+// Velotext: view models for the phrase tree (folders, phrases, the "Recently used" and "Most used" folders).
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using System.Collections.ObjectModel;
@@ -427,39 +427,73 @@ public sealed partial class PhraseViewModel : TreeNodeViewModel
     }
 }
 
-/// <summary>The read-only "Recently used" folder at the top of the tree.</summary>
-public sealed class RecentFolderViewModel : TreeNodeViewModel
+/// <summary>A read-only folder of shortcuts at the top of the tree: "Recently used" or "Most used".</summary>
+public sealed class ShortcutFolderViewModel : TreeNodeViewModel
 {
-    /// <summary>A fixed id; the folder is not part of the library.</summary>
-    public static readonly Guid FolderId = new("1f0e9b0a-7d6c-4c55-9a9d-3b7a1e2c4d5f");
+    /// <summary>Fixed id of "Recently used"; the folder is not part of the library.</summary>
+    public static readonly Guid RecentId = new("1f0e9b0a-7d6c-4c55-9a9d-3b7a1e2c4d5f");
+
+    /// <summary>Fixed id of "Most used"; the folder is not part of the library.</summary>
+    public static readonly Guid MostUsedId = new("8c3d6e21-52a4-4f0b-b7d1-6a9e0c4f2b38");
+
+    /// <summary>Creates the folder, expanded so its phrases are one click away.</summary>
+    /// <param name="id">The fixed id.</param>
+    /// <param name="name">Text shown in the tree.</param>
+    /// <param name="glyph">Icon-font character shown before the name.</param>
+    /// <param name="description">Tooltip that says which phrases the folder holds.</param>
+    /// <param name="hint">Text of the row shown while the folder has no phrases.</param>
+    public ShortcutFolderViewModel(Guid id, string name, string glyph, string description, string hint)
+    {
+        Id = id;
+        DisplayName = name;
+        Glyph = glyph;
+        Description = description;
+        Hint = hint;
+        IsExpanded = true;
+    }
+
+    /// <summary>The "Recently used" folder: the most recently inserted phrases, newest first.</summary>
+    public static ShortcutFolderViewModel CreateRecent() =>
+        new(RecentId, "Recently used", ((char)0xE81C).ToString(), "The 10 phrases that you inserted last.", "Phrases that you insert appear here.");
+
+    /// <summary>The "Most used" folder: the phrases inserted most in the last 30 days.</summary>
+    public static ShortcutFolderViewModel CreateMostUsed() =>
+        new(MostUsedId, "Most used", ((char)0xEAFC).ToString(), "The 10 phrases that you inserted most in the last 30 days.", "Phrases that you use most appear here.");
 
     /// <inheritdoc />
-    public override Guid Id => FolderId;
+    public override Guid Id { get; }
 
     /// <inheritdoc />
-    public override string DisplayName => "Recently used";
+    public override string DisplayName { get; }
+
+    /// <summary>Icon-font character shown before the name.</summary>
+    public string Glyph { get; }
+
+    /// <summary>Tooltip that says which phrases the folder holds.</summary>
+    public string Description { get; }
+
+    /// <summary>Text of the row shown while the folder has no phrases.</summary>
+    public string Hint { get; }
 
     /// <inheritdoc />
     public override bool IsReadOnly => true;
 
-    /// <summary>Creates the folder, expanded so recent phrases are one click away.</summary>
-    public RecentFolderViewModel() => IsExpanded = true;
-
-    /// <summary>Shortcuts to the most recently inserted phrases, newest first, or one hint row when there are none.</summary>
+    /// <summary>Shortcuts to phrases, or one hint row when there are none.</summary>
     public ObservableCollection<TreeNodeViewModel> Items { get; } = [];
 
     /// <inheritdoc />
-    public override LibraryNode ToModel() => throw new NotSupportedException("The recent folder is not part of the library.");
+    public override LibraryNode ToModel() => throw new NotSupportedException("A shortcut folder is not part of the library.");
 }
 
-/// <summary>The hint row shown in "Recently used" before the first expansion.</summary>
-public sealed class RecentHintViewModel : TreeNodeViewModel
+/// <summary>The hint row shown in a shortcut folder while it has no phrases.</summary>
+/// <param name="text">The hint text.</param>
+public sealed class ShortcutHintViewModel(string text) : TreeNodeViewModel
 {
     /// <inheritdoc />
     public override Guid Id => Guid.Empty;
 
     /// <inheritdoc />
-    public override string DisplayName => "Phrases that you insert appear here.";
+    public override string DisplayName => text;
 
     /// <inheritdoc />
     public override bool IsReadOnly => true;
@@ -468,18 +502,18 @@ public sealed class RecentHintViewModel : TreeNodeViewModel
     public override LibraryNode ToModel() => throw new NotSupportedException("The hint is not part of the library.");
 }
 
-/// <summary>A shortcut in "Recently used" to a phrase in the library.</summary>
-public sealed class RecentEntryViewModel : TreeNodeViewModel, IDisposable
+/// <summary>A shortcut in "Recently used" or "Most used" to a phrase in the library.</summary>
+public sealed class ShortcutViewModel : TreeNodeViewModel, IDisposable
 {
     /// <summary>Creates the shortcut.</summary>
     /// <param name="target">The phrase it points to.</param>
-    public RecentEntryViewModel(PhraseViewModel target)
+    public ShortcutViewModel(PhraseViewModel target)
     {
         Target = target ?? throw new ArgumentNullException(nameof(target));
         target.PropertyChanged += OnTargetChanged;
     }
 
-    /// <summary>Stops following the phrase (called when the recent list is rebuilt).</summary>
+    /// <summary>Stops following the phrase (called when the folder is rebuilt).</summary>
     public void Dispose() => Target.PropertyChanged -= OnTargetChanged;
 
     private void OnTargetChanged(object? sender, PropertyChangedEventArgs e)
@@ -506,5 +540,5 @@ public sealed class RecentEntryViewModel : TreeNodeViewModel, IDisposable
     public override bool IsReadOnly => true;
 
     /// <inheritdoc />
-    public override LibraryNode ToModel() => throw new NotSupportedException("Recent entries are not part of the library.");
+    public override LibraryNode ToModel() => throw new NotSupportedException("Shortcuts are not part of the library.");
 }

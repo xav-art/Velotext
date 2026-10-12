@@ -65,7 +65,7 @@ public interface IExpansionHost
     /// <param name="id">Phrase id.</param>
     Phrase? FindPhrase(Guid id);
 
-    /// <summary>Called after a phrase was inserted or copied, for the "Recently used" folder.</summary>
+    /// <summary>Called after a phrase was inserted or copied, for "Recently used", "Most used" and the 30-day count.</summary>
     /// <param name="id">Phrase id.</param>
     void PhraseInserted(Guid id);
 

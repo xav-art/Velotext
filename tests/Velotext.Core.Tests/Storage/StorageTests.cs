@@ -298,7 +298,49 @@ public sealed class StorageTests : IDisposable
 
         store.Save(tracker.Snapshot());
 
-        Assert.Equal(1, store.Load().Value!.Phrases[id].UseCount);
+        var json = File.ReadAllText(Path.Combine(_dir, "usage.json"));
+        Assert.Contains("\"2026-10-10\": 1", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("useCount", json, StringComparison.Ordinal);
+        var loaded = store.Load().Value!;
+        Assert.Equal(UsageData.CurrentSchemaVersion, loaded.SchemaVersion);
+        Assert.Equal(1, loaded.Phrases[id].Days[new DateOnly(2026, 10, 10)]);
+    }
+
+    [Fact]
+    public void Schema_1_usage_file_loads_with_its_total()
+    {
+        var path = Path.Combine(_dir, "usage.json");
+        var id = Guid.NewGuid();
+        File.WriteAllText(path, $$"""
+            {
+              "schemaVersion": 1,
+              "phrases": {
+                "{{id}}": { "lastUsedUtc": "2026-10-09T08:00:00+00:00", "useCount": 4 }
+              }
+            }
+            """);
+        var store = new JsonFileStore<UsageData>(path, VelotextJsonContext.Default.UsageData, null, _time);
+
+        var result = store.Load();
+
+        Assert.Equal(LoadStatus.Loaded, result.Status);
+        Assert.Equal(1, result.Value!.SchemaVersion);
+        Assert.Equal(4, result.Value.Phrases[id].LegacyUseCount);
+        Assert.Empty(result.Value.Phrases[id].Days);
+        Assert.Equal(4, new UsageTracker(result.Value).UsesInWindow(id, Build.Now));
+    }
+
+    [Fact]
+    public void Usage_file_without_phrases_loads_empty()
+    {
+        var path = Path.Combine(_dir, "usage.json");
+        File.WriteAllText(path, "{ \"schemaVersion\": 2 }");
+
+        var result = new JsonFileStore<UsageData>(path, VelotextJsonContext.Default.UsageData, null, _time).Load();
+
+        Assert.Equal(LoadStatus.Loaded, result.Status);
+        Assert.Empty(result.Value!.Phrases);
+        Assert.Empty(new UsageTracker(result.Value).MostRecent(5, _ => true));
     }
 
     [Fact]

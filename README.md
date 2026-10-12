@@ -22,7 +22,8 @@ editors. It runs with normal user rights, starts with Windows and stays out of t
   triggers that expand immediately and for hotkeys, and not in terminal windows.
 - **Safe while you work**: if you click or switch windows while Velotext inserts a phrase, it stops and tells you,
   so a phrase never lands in the wrong place.
-- **Folders, search and "Recently used"**, with drag and drop to reorder.
+- **Folders, search, "Recently used" and "Most used"**, with drag and drop to reorder. The editor shows how often
+  each phrase was used in the last 30 days.
 - **Problem checks**: duplicate triggers, triggers that can never fire because a shorter one fires first, and
   hotkeys in use elsewhere are flagged next to the trigger.
 - **Pause and resume** from the tray icon, the main window or an optional hotkey.
@@ -90,7 +91,7 @@ phrase, the phrase stays on the clipboard until the app reads it, you switch to 
 |---|---|
 | Phrases and settings | `%APPDATA%\Velotext` (`library.json`, `settings.json`) |
 | Automatic backups of your phrases | `%APPDATA%\Velotext\backups` (the 20 most recent) |
-| How often and when you last used each phrase (for "Recently used") | `%APPDATA%\Velotext\usage.json` |
+| When you last used each phrase, and how often per day in the last 30 days (older days are deleted) | `%APPDATA%\Velotext\usage.json` |
 | Logs (no typed text, no phrase content) | `%LOCALAPPDATA%\Velotext\logs` (the last 7 daily files) |
 | Installer and uninstaller logs (no typed text, no phrase content) | `%LOCALAPPDATA%\Velopack` (`velopack.log`, `velopack_Velotext.log`) |
 

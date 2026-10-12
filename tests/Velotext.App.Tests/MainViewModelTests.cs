@@ -1,4 +1,4 @@
-// Velotext: tests for the main view model (tree editing, commit and save, problems, search, recent, import/export).
+// Velotext: tests for the main view model (tree editing, commit and save, problems, search, recent and most used, import/export).
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using Velotext.App.Services;
@@ -19,11 +19,20 @@ public sealed class MainViewModelTests : IDisposable
     private static FolderViewModel FirstFolder(MainViewModel vm) => vm.TreeRoots.OfType<FolderViewModel>().First();
 
     [Fact]
-    public void Starts_with_the_starter_library_and_recent_folder_first()
+    public void Starts_with_the_starter_library_and_shortcut_folders_first()
     {
         using var vm = _env.CreateMainViewModel();
 
-        Assert.IsType<RecentFolderViewModel>(vm.TreeRoots[0]);
+        Assert.Same(vm.Recent, vm.TreeRoots[0]);
+        Assert.Same(vm.MostUsed, vm.TreeRoots[1]);
+        Assert.Equal(ShortcutFolderViewModel.RecentId, vm.Recent.Id);
+        Assert.Equal(ShortcutFolderViewModel.MostUsedId, vm.MostUsed.Id);
+        Assert.Equal("Most used", vm.MostUsed.DisplayName);
+        Assert.Equal("The 10 phrases that you inserted most in the last 30 days.", vm.MostUsed.Description);
+        Assert.Equal(((char)0xEAFC).ToString(), vm.MostUsed.Glyph);
+        Assert.True(vm.MostUsed.IsReadOnly);
+        Assert.True(vm.MostUsed.IsExpanded);
+        Assert.Equal("Phrases that you use most appear here.", Assert.IsType<ShortcutHintViewModel>(Assert.Single(vm.MostUsed.Items)).DisplayName);
         Assert.Equal("My phrases", FirstFolder(vm).Name);
         Assert.Equal(1, vm.PhraseCount);
         Assert.Equal("1 phrase", vm.PhraseCountText);
@@ -31,7 +40,7 @@ public sealed class MainViewModelTests : IDisposable
         Assert.Equal("No phrase selected", vm.EmptyEditorTitle);
         Assert.True(vm.Recent.IsVisible);
         Assert.True(vm.Recent.IsExpanded);
-        var hint = Assert.IsType<RecentHintViewModel>(Assert.Single(vm.Recent.Items));
+        var hint = Assert.IsType<ShortcutHintViewModel>(Assert.Single(vm.Recent.Items));
         Assert.Equal("Phrases that you insert appear here.", hint.DisplayName);
         Assert.True(hint.IsReadOnly);
         Assert.Equal(Guid.Empty, hint.Id);
@@ -162,7 +171,7 @@ public sealed class MainViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Move_up_down_and_drag_drop_keep_recent_folder_first_and_refuse_cycles()
+    public void Move_up_down_and_drag_drop_keep_shortcut_folders_first_and_refuse_cycles()
     {
         using var vm = _env.CreateMainViewModel();
         var first = FirstFolder(vm);
@@ -171,22 +180,23 @@ public sealed class MainViewModelTests : IDisposable
         var second = (FolderViewModel)vm.SelectedNode!;
 
         vm.MoveUpCommand.Execute(null);
-        Assert.Same(second, vm.TreeRoots[1]);
-        vm.MoveUpCommand.Execute(null);
-        Assert.Same(second, vm.TreeRoots[1]);
-        vm.MoveDownCommand.Execute(null);
         Assert.Same(second, vm.TreeRoots[2]);
+        vm.MoveUpCommand.Execute(null);
+        Assert.Same(second, vm.TreeRoots[2]);
+        vm.MoveDownCommand.Execute(null);
+        Assert.Same(second, vm.TreeRoots[3]);
 
         Assert.True(vm.Move(second, first, DropPosition.Inside));
         Assert.Same(first, second.Parent);
         Assert.False(MainViewModel.CanMove(first, second, DropPosition.Inside));
         Assert.False(MainViewModel.CanMove(first, vm.TreeRoots[0], DropPosition.Before));
+        Assert.False(MainViewModel.CanMove(first, vm.MostUsed, DropPosition.After));
         Assert.False(MainViewModel.CanMove(first, first, DropPosition.After));
 
         var phrase = first.Children.OfType<PhraseViewModel>().First();
         Assert.False(MainViewModel.CanMove(second, phrase, DropPosition.Inside));
         Assert.True(vm.Move(phrase, first, DropPosition.Before));
-        Assert.Same(phrase, vm.TreeRoots[1]);
+        Assert.Same(phrase, vm.TreeRoots[2]);
         Assert.Null(phrase.Parent);
         Assert.False(vm.Move(first, second, DropPosition.Inside));
     }
@@ -220,7 +230,7 @@ public sealed class MainViewModelTests : IDisposable
 
         _env.Usage.RecordUse(phrase.Id);
 
-        var entry = Assert.IsType<RecentEntryViewModel>(Assert.Single(vm.Recent.Items));
+        var entry = Assert.IsType<ShortcutViewModel>(Assert.Single(vm.Recent.Items));
         Assert.True(vm.Recent.IsVisible);
         Assert.Equal(phrase.DisplayName, entry.DisplayName);
         Assert.Equal(phrase.TriggerSummary, entry.TriggerSummary);
@@ -228,6 +238,99 @@ public sealed class MainViewModelTests : IDisposable
         Assert.Same(phrase, vm.EditorPhrase);
         Assert.Throws<NotSupportedException>(() => entry.ToModel());
         Assert.Throws<NotSupportedException>(() => vm.Recent.ToModel());
+        Assert.Same(phrase, Assert.IsType<ShortcutViewModel>(Assert.Single(vm.MostUsed.Items)).Target);
+    }
+
+    [Fact]
+    public void Most_used_folder_ranks_phrases_and_keeps_the_selection_when_the_order_holds()
+    {
+        using var vm = _env.CreateMainViewModel();
+        var first = FirstFolder(vm).Children.OfType<PhraseViewModel>().First();
+        vm.NewPhraseCommand.Execute(null);
+        var second = vm.EditorPhrase!;
+
+        _env.Usage.RecordUse(first.Id);
+        _env.Usage.RecordUse(second.Id);
+        _env.Usage.RecordUse(second.Id);
+
+        Assert.Equal([second, first], vm.MostUsed.Items.OfType<ShortcutViewModel>().Select(s => s.Target));
+        Assert.Equal([second, first], vm.Recent.Items.OfType<ShortcutViewModel>().Select(s => s.Target));
+        var top = (ShortcutViewModel)vm.MostUsed.Items[0];
+        vm.SelectedNode = top;
+        Assert.True(vm.DeleteCommand.CanExecute(null));
+        Assert.True(vm.RenameCommand.CanExecute(null));
+        Assert.False(vm.MoveUpCommand.CanExecute(null));
+
+        // Another use that keeps the order rebuilds nothing, so the selected shortcut stays.
+        _env.Usage.RecordUse(second.Id);
+        Assert.Same(top, vm.MostUsed.Items[0]);
+        Assert.Same(second, vm.EditorPhrase);
+
+        // Deleting a phrase removes it from both folders.
+        vm.SelectedNode = second;
+        vm.DeleteCommand.Execute(null);
+        Assert.Same(first, Assert.IsType<ShortcutViewModel>(Assert.Single(vm.MostUsed.Items)).Target);
+        Assert.Same(first, Assert.IsType<ShortcutViewModel>(Assert.Single(vm.Recent.Items)).Target);
+    }
+
+    [Fact]
+    public void Editor_shows_how_often_the_phrase_was_used_in_30_days()
+    {
+        using var vm = _env.CreateMainViewModel();
+        var phrase = FirstFolder(vm).Children.OfType<PhraseViewModel>().First();
+        Assert.Equal(string.Empty, vm.EditorUsageText);
+
+        vm.SelectedNode = phrase;
+        Assert.Equal("Not used in the last 30 days", vm.EditorUsageText);
+
+        _env.Usage.RecordUse(phrase.Id);
+        Assert.Equal("Used once in the last 30 days", vm.EditorUsageText);
+
+        _env.Usage.RecordUse(phrase.Id);
+        Assert.Equal("Used 2 times in the last 30 days", vm.EditorUsageText);
+
+        vm.SelectedNode = FirstFolder(vm);
+        Assert.Equal(string.Empty, vm.EditorUsageText);
+    }
+
+    [Fact]
+    public void Usage_service_migrates_old_files_and_deletes_expired_days()
+    {
+        var clock = new ManualClock(new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero));
+        var id = Guid.NewGuid();
+        File.WriteAllText(_env.Paths.UsageFile, $$"""
+            { "schemaVersion": 1, "phrases": { "{{id}}": { "lastUsedUtc": "2026-10-11T15:00:00+00:00", "useCount": 5 } } }
+            """);
+        var usage = new UsageService(_env.Paths, clock, Microsoft.Extensions.Logging.Abstractions.NullLogger<UsageService>.Instance);
+        var changes = 0;
+        usage.Changed += (_, _) => changes++;
+
+        usage.Load();
+        Assert.Equal(5, usage.UsesInWindow(id));
+        Assert.Equal([id], usage.MostUsed(10, _ => true));
+
+        // Nothing expired yet: no change and no event.
+        usage.TrimExpired();
+        Assert.Equal(0, changes);
+
+        // The old file is rewritten at once in the new format, without the all-time total.
+        usage.Dispose();
+        var json = File.ReadAllText(_env.Paths.UsageFile);
+        Assert.Contains("\"2026-10-11\": 5", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("useCount", json, StringComparison.Ordinal);
+        Assert.Equal(TimeSpan.FromHours(1), UsageService.TrimInterval);
+
+        // 31 days later the hourly check deletes the day and tells the window.
+        using var later = new UsageService(_env.Paths, clock, Microsoft.Extensions.Logging.Abstractions.NullLogger<UsageService>.Instance);
+        later.Load();
+        later.Changed += (_, _) => changes++;
+        clock.Now = clock.Now.AddDays(31);
+        later.TrimExpired();
+        Assert.Equal(1, changes);
+        Assert.Equal(0, later.UsesInWindow(id));
+        later.Dispose();
+        Assert.DoesNotContain("2026-10-11\":", File.ReadAllText(_env.Paths.UsageFile), StringComparison.Ordinal);
+        Assert.Contains("lastUsedUtc", File.ReadAllText(_env.Paths.UsageFile), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -353,7 +456,7 @@ public sealed class MainViewModelTests : IDisposable
         Assert.Contains("Hotkeys: Ctrl+Alt+R", details, StringComparison.Ordinal);
         Assert.Contains("Links open: evil.example", details, StringComparison.Ordinal);
         Assert.Contains("Check this link: the text \"www.example.com\" opens evil.example.", details, StringComparison.Ordinal);
-        Assert.Equal(2, vm.TreeRoots.Count);
+        Assert.Equal(3, vm.TreeRoots.Count);
     }
 
     [Fact]
@@ -465,10 +568,12 @@ public sealed class MainViewModelTests : IDisposable
 
         Assert.Equal("No phrases match \"zzz\". Try other words, or press Esc to clear the search.", vm.NoMatchesText);
         Assert.False(vm.Recent.IsVisible);
+        Assert.False(vm.MostUsed.IsVisible);
         Assert.Equal(", show next", vm.ProblemButtonName);
 
         vm.ClearSearchCommand.Execute(null);
         Assert.True(vm.Recent.IsVisible);
+        Assert.True(vm.MostUsed.IsVisible);
     }
 
     [Fact]

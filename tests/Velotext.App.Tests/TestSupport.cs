@@ -96,6 +96,14 @@ internal sealed class FakePause : IPauseControl
     }
 }
 
+/// <summary>A clock that only moves when the test says so.</summary>
+internal sealed class ManualClock(DateTimeOffset start) : TimeProvider
+{
+    public DateTimeOffset Now { get; set; } = start;
+
+    public override DateTimeOffset GetUtcNow() => Now;
+}
+
 /// <summary>A temporary data folder with real services wired to it.</summary>
 internal sealed class TestEnvironment : IDisposable
 {

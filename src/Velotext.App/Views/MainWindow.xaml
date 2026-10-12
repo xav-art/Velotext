@@ -43,14 +43,14 @@
       </Style.Triggers>
     </Style>
 
-    <HierarchicalDataTemplate DataType="{x:Type vm:RecentFolderViewModel}" ItemsSource="{Binding Items}">
-      <StackPanel Orientation="Horizontal" Height="28">
-        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="&#xE81C;" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,8,0" />
+    <HierarchicalDataTemplate DataType="{x:Type vm:ShortcutFolderViewModel}" ItemsSource="{Binding Items}">
+      <StackPanel Orientation="Horizontal" Height="28" Background="Transparent" ToolTip="{Binding Description}">
+        <views:Glyph Style="{StaticResource Velotext.Icon}" Text="{Binding Glyph}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,8,0" />
         <TextBlock Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
       </StackPanel>
     </HierarchicalDataTemplate>
 
-    <DataTemplate DataType="{x:Type vm:RecentHintViewModel}">
+    <DataTemplate DataType="{x:Type vm:ShortcutHintViewModel}">
       <TextBlock Height="28" Style="{StaticResource TreeRowText}" Text="{Binding DisplayName}" FontSize="{StaticResource Velotext.CaptionSize}"
                  Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
     </DataTemplate>
@@ -89,7 +89,7 @@
       </Grid>
     </DataTemplate>
 
-    <DataTemplate DataType="{x:Type vm:RecentEntryViewModel}">
+    <DataTemplate DataType="{x:Type vm:ShortcutViewModel}">
       <Grid Height="28">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="Auto" />
@@ -318,9 +318,14 @@
             </Grid.RowDefinitions>
 
             <TextBlock Style="{StaticResource Velotext.SectionLabel}" Text="Name" />
-            <TextBox x:Name="NameBox" Grid.Row="1" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
-                     FontSize="{StaticResource Velotext.SubtitleSize}" FontWeight="SemiBold" Padding="12,4"
-                     AutomationProperties.Name="Phrase name" />
+            <StackPanel Grid.Row="1">
+              <TextBox x:Name="NameBox" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"
+                       FontSize="{StaticResource Velotext.SubtitleSize}" FontWeight="SemiBold" Padding="12,4"
+                       AutomationProperties.Name="Phrase name"
+                       AutomationProperties.HelpText="{Binding DataContext.EditorUsageText, RelativeSource={RelativeSource AncestorType=Window}}" />
+              <TextBlock x:Name="UsageText" Text="{Binding DataContext.EditorUsageText, RelativeSource={RelativeSource AncestorType=Window}}"
+                         Margin="0,8,0,0" FontSize="{StaticResource Velotext.CaptionSize}" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
 
             <TextBlock Grid.Row="2" Style="{StaticResource Velotext.SectionLabel}" Text="Text" Margin="0,24,0,8" />
             <editing:RichTextEditor x:Name="ContentEditor" Grid.Row="3"

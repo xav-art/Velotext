@@ -99,6 +99,9 @@ public sealed class UiRenderTests : IDisposable
                 vm.SelectedNode = phrase;
                 phrase.AddHotkeyTriggerCommand.Execute(null);
                 vm.CommitNow();
+                _env.Usage.RecordUse(phrase.Id);
+                _env.Usage.RecordUse(phrase.Id);
+                Assert.Equal("Used 2 times in the last 30 days", vm.EditorUsageText);
                 Snapshot(window, $"main-{theme}-phrase");
 
                 vm.SearchText = "no such phrase";

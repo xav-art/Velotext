@@ -46,7 +46,7 @@ public interface IPauseControl
 /// </summary>
 public sealed partial class MainViewModel : ObservableObject, IDisposable
 {
-    private const int RecentCount = 10;
+    private const int ShortcutCount = 10;
 
     private readonly LibraryService _library;
     private readonly SettingsService _settings;
@@ -101,6 +101,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(ProblemCountText), nameof(ProblemButtonName))]
     private int _problemCount;
 
+    /// <summary>How often the phrase in the editor was inserted in the last 30 days, as a sentence.</summary>
+    [ObservableProperty]
+    private string _editorUsageText = string.Empty;
+
     /// <summary>A message shown at the top of the window, or <c>null</c>.</summary>
     [ObservableProperty]
     private string? _banner;
@@ -137,11 +141,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _context = new EditContext(MarkDirty, () => _settings.Current.NewTriggerDefaults, time);
         _commit = new Debouncer(() => _ui.Post(CommitNow), TimeSpan.FromMilliseconds(300));
 
-        TreeRoots = [Recent];
+        TreeRoots = [Recent, MostUsed];
         TreeRoots.CollectionChanged += OnTreeRootsChanged;
         BuildTree(_library.Snapshot.Library);
         ApplyIssues(_library.Snapshot);
-        RefreshRecent();
+        RefreshUsage();
         _isPaused = _pause.IsPaused;
         _saveState = _library.SaveState;
         _editorFontName = _settings.Current.RichTextFontName;
@@ -170,11 +174,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Raised when the settings window should open.</summary>
     public event EventHandler? SettingsRequested;
 
-    /// <summary>Top-level tree items: "Recently used" first, then the library.</summary>
+    /// <summary>Top-level tree items: "Recently used" and "Most used" first, then the library.</summary>
     public ObservableCollection<TreeNodeViewModel> TreeRoots { get; }
 
     /// <summary>The "Recently used" folder.</summary>
-    public RecentFolderViewModel Recent { get; } = new();
+    public ShortcutFolderViewModel Recent { get; } = ShortcutFolderViewModel.CreateRecent();
+
+    /// <summary>The "Most used" folder (last 30 days).</summary>
+    public ShortcutFolderViewModel MostUsed { get; } = ShortcutFolderViewModel.CreateMostUsed();
 
     /// <summary>True when the library holds no phrases.</summary>
     public bool IsLibraryEmpty => PhraseCount == 0;
@@ -227,7 +234,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Converts the tree to an immutable library.</summary>
     public PhraseLibrary BuildLibrary() => new()
     {
-        Items = [.. TreeRoots.Where(n => n is not RecentFolderViewModel).Select(n => n.ToModel())],
+        Items = [.. TreeRoots.Where(n => n is not ShortcutFolderViewModel).Select(n => n.ToModel())],
     };
 
     /// <summary>Hands pending edits to the library service now.</summary>
@@ -251,7 +258,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         BuildTree(LibrarySanitizer.Repair(library, _time.GetUtcNow()));
         _dirty = true;
         CommitNow();
-        RefreshRecent();
+        RefreshUsage();
     }
 
     /// <summary>Moves a node by drag and drop.</summary>
@@ -311,7 +318,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
         }
 
-        Walk(TreeRoots.Where(n => n is not RecentFolderViewModel), string.Empty);
+        Walk(TreeRoots.Where(n => n is not ShortcutFolderViewModel), string.Empty);
         return result;
     }
 
@@ -455,7 +462,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanDelete))]
     private void Delete()
     {
-        var node = SelectedNode is RecentEntryViewModel recent ? recent.Target : SelectedNode;
+        var node = SelectedNode is ShortcutViewModel shortcut ? shortcut.Target : SelectedNode;
         if (node is null || node.IsReadOnly)
         {
             return;
@@ -485,10 +492,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var index = siblings.IndexOf(node);
         siblings.Remove(node);
         Unregister(node);
-        RefreshRecent();
+        RefreshUsage();
 
         TreeNodeViewModel? next = index < siblings.Count ? siblings[index] : index - 1 >= MinimumIndex(siblings) ? siblings[index - 1] : node.Parent;
-        if (next is not null && next is not RecentFolderViewModel)
+        if (next is not null && next is not ShortcutFolderViewModel)
         {
             Select(next);
             FocusNodeRequested?.Invoke(this, next);
@@ -541,8 +548,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             case PhraseViewModel phrase:
                 FocusPhraseNameRequested?.Invoke(this, phrase);
                 break;
-            case RecentEntryViewModel recent:
-                FocusPhraseNameRequested?.Invoke(this, recent.Target);
+            case ShortcutViewModel shortcut:
+                FocusPhraseNameRequested?.Invoke(this, shortcut.Target);
                 break;
         }
     }
@@ -643,9 +650,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void Export()
     {
-        var node = SelectedNode is RecentEntryViewModel recent ? recent.Target : SelectedNode;
-        var items = node is null or RecentFolderViewModel ? BuildLibrary().Items : [node.ToModel()];
-        var name = node is null or RecentFolderViewModel ? "Velotext phrases" : node.DisplayName;
+        var node = SelectedNode is ShortcutViewModel shortcut ? shortcut.Target : SelectedNode;
+        var items = node is null or ShortcutFolderViewModel ? BuildLibrary().Items : [node.ToModel()];
+        var name = node is null or ShortcutFolderViewModel ? "Velotext phrases" : node.DisplayName;
         var path = _dialogs.PickFileToSave($"Velotext phrases (*{PhraseExchange.FileExtension})|*{PhraseExchange.FileExtension}", SafeFileName(name) + PhraseExchange.FileExtension);
         if (path is null)
         {
@@ -691,11 +698,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private bool HasSelectedPhrase() => SelectedPhrase() is not null;
 
-    private bool CanDelete() => SelectedNode is RecentEntryViewModel or { IsReadOnly: false };
+    private bool CanDelete() => SelectedNode is ShortcutViewModel or { IsReadOnly: false };
 
     private bool CanRearrange() => SelectedNode is { IsReadOnly: false };
 
-    private bool CanRename() => SelectedNode is RecentEntryViewModel or { IsReadOnly: false };
+    private bool CanRename() => SelectedNode is ShortcutViewModel or { IsReadOnly: false };
 
     /// <summary>Hides the banner.</summary>
     [RelayCommand]
@@ -705,9 +712,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         EditorPhrase = value switch
         {
             PhraseViewModel phrase => phrase,
-            RecentEntryViewModel recent => recent.Target,
+            ShortcutViewModel shortcut => shortcut.Target,
             _ => null,
         };
+
+    partial void OnEditorPhraseChanged(PhraseViewModel? value) => UpdateEditorUsage();
 
     partial void OnSearchTextChanged(string value) => ApplyFilter();
 
@@ -719,7 +728,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     }
 
     private static int MinimumIndex(ObservableCollection<TreeNodeViewModel> siblings) =>
-        siblings.Count > 0 && siblings[0] is RecentFolderViewModel ? 1 : 0;
+        siblings.TakeWhile(n => n is ShortcutFolderViewModel).Count();
 
     private void OnTreeRootsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
@@ -747,7 +756,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _building = true;
         try
         {
-            while (TreeRoots.Count > 1)
+            var shortcutFolders = MinimumIndex(TreeRoots);
+            while (TreeRoots.Count > shortcutFolders)
             {
                 TreeRoots.RemoveAt(TreeRoots.Count - 1);
             }
@@ -848,7 +858,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private PhraseViewModel? SelectedPhrase() => SelectedNode switch
     {
         PhraseViewModel phrase => phrase,
-        RecentEntryViewModel recent => recent.Target,
+        ShortcutViewModel shortcut => shortcut.Target,
         _ => null,
     };
 
@@ -945,12 +955,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
 
         var anyVisible = false;
-        foreach (var node in TreeRoots.Where(n => n is not RecentFolderViewModel))
+        foreach (var node in TreeRoots.Where(n => n is not ShortcutFolderViewModel))
         {
             anyVisible |= Visit(node);
         }
 
         Recent.IsVisible = !searching;
+        MostUsed.IsVisible = !searching;
         HasNoMatches = searching && !anyVisible;
     }
 
@@ -965,26 +976,52 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ProblemCount = _phrases.Values.Sum(p => p.ProblemCount);
     }
 
-    private void RefreshRecent()
+    /// <summary>Rebuilds "Recently used", "Most used" and the editor's usage line from the usage data.</summary>
+    private void RefreshUsage()
     {
-        foreach (var entry in Recent.Items.OfType<RecentEntryViewModel>())
+        Fill(Recent, _usage.Tracker.MostRecent(ShortcutCount, _phrases.ContainsKey));
+        Fill(MostUsed, _usage.MostUsed(ShortcutCount, _phrases.ContainsKey));
+        UpdateEditorUsage();
+    }
+
+    /// <summary>Shows phrases in a shortcut folder, or its hint when there are none. An unchanged list is kept, so its selection stays.</summary>
+    /// <param name="folder">The folder to fill.</param>
+    /// <param name="ids">The phrases to show, in order.</param>
+    private void Fill(ShortcutFolderViewModel folder, IReadOnlyList<Guid> ids)
+    {
+        folder.IsVisible = PhraseSearch.Tokenize(SearchText).Length == 0;
+        var targets = ids.Select(id => _phrases[id]).ToList();
+        var shown = folder.Items.OfType<ShortcutViewModel>().Select(entry => entry.Target).ToList();
+        if (targets.Count == 0 ? folder.Items is [ShortcutHintViewModel] : shown.SequenceEqual(targets))
+        {
+            return;
+        }
+
+        foreach (var entry in folder.Items.OfType<ShortcutViewModel>())
         {
             entry.Dispose();
         }
 
-        Recent.Items.Clear();
-        foreach (var id in _usage.Tracker.MostRecent(RecentCount, _phrases.ContainsKey))
+        folder.Items.Clear();
+        foreach (var target in targets)
         {
-            Recent.Items.Add(new RecentEntryViewModel(_phrases[id]));
+            folder.Items.Add(new ShortcutViewModel(target));
         }
 
-        if (Recent.Items.Count == 0)
+        if (folder.Items.Count == 0)
         {
-            Recent.Items.Add(new RecentHintViewModel());
+            folder.Items.Add(new ShortcutHintViewModel(folder.Hint));
         }
-
-        Recent.IsVisible = PhraseSearch.Tokenize(SearchText).Length == 0;
     }
+
+    /// <summary>Sets the editor's usage line for the phrase in the editor.</summary>
+    private void UpdateEditorUsage() =>
+        EditorUsageText = EditorPhrase is null ? string.Empty : _usage.UsesInWindow(EditorPhrase.Id) switch
+        {
+            0 => "Not used in the last 30 days",
+            1 => "Used once in the last 30 days",
+            var n => string.Create(CultureInfo.InvariantCulture, $"Used {n} times in the last 30 days"),
+        };
 
     private void OnLibraryChanged(object? sender, LibrarySnapshot snapshot) => _ui.Post(() => ApplyIssues(snapshot));
 
@@ -1004,7 +1041,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     });
 
-    private void OnUsageChanged(object? sender, EventArgs e) => _ui.Post(RefreshRecent);
+    private void OnUsageChanged(object? sender, EventArgs e) => _ui.Post(RefreshUsage);
 
     private void OnPausedChanged(object? sender, bool paused) => _ui.Post(() => IsPaused = _pause.IsPaused);
 
