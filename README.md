@@ -4,6 +4,26 @@ Velotext is a text expander for Windows. Type a short trigger, such as `;thx`, a
 formatted phrase: bold text, bullets, numbered lists and links stay intact in Outlook, Word, Teams and browser
 editors. It runs with normal user rights, starts with Windows and stays out of the way in the notification area.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/editor-dark.png">
+  <img src=".github/screenshots/editor-light.png" alt="The Velotext window: the phrase list on the left with the Most used folder and its use counts, and on the right a formatted phrase with bullets, a link and its typed-text trigger.">
+</picture>
+
+Select **Most used** to see your use of the last 30 days: insertions, characters saved, typing time saved,
+insertions per day and every phrase that you used.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/dashboard-dark.png">
+  <img src=".github/screenshots/dashboard-light.png" alt="The usage dashboard: the number of insertions, the characters saved and the typing time saved in the last 30 days, a bar chart of insertions per day and a table of phrases with their uses and characters saved.">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/settings-dark.png">
+  <img src=".github/screenshots/settings-light.png" alt="The settings window: start with Windows, undo with Backspace, a pause hotkey, the options for new triggers and the font for formatted text." width="604">
+</picture>
+
+The screenshots show made-up demo phrases.
+
 ## Features
 
 - **Typed-text triggers** with three options for each trigger:

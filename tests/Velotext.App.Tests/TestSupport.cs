@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
 using System.Windows;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Extensions.Logging.Abstractions;
 using Velotext.App.Services;
@@ -96,6 +98,46 @@ internal sealed class FakePause : IPauseControl
     }
 }
 
+/// <summary>Renders a window's content to a PNG file, on the WPF thread that owns the window.</summary>
+internal static class WindowSnapshot
+{
+    /// <summary>Lets layout and data binding finish.</summary>
+    public static void Pump()
+    {
+        var frame = new DispatcherFrame();
+        Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => frame.Continue = false);
+        Dispatcher.PushFrame(frame);
+    }
+
+    /// <summary>Saves the window's content on its background colour; <paramref name="scale"/> 1.5 gives a sharp image for high-DPI screens.</summary>
+    public static void Save(Window window, string path, double scale = 1)
+    {
+        window.UpdateLayout();
+        Pump();
+        if (window.Content is not FrameworkElement content)
+        {
+            return;
+        }
+
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var width = (int)Math.Ceiling(content.ActualWidth * scale);
+        var height = (int)Math.Ceiling(content.ActualHeight * scale);
+        var bitmap = new RenderTargetBitmap(width, height, 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+        var background = new DrawingVisual();
+        using (var context = background.RenderOpen())
+        {
+            context.DrawRectangle(window.Background ?? (Brush)Application.Current.Resources["Velotext.Bg"], null, new Rect(0, 0, content.ActualWidth, content.ActualHeight));
+        }
+
+        bitmap.Render(background);
+        bitmap.Render(content);
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(bitmap));
+        using var stream = File.Create(path);
+        encoder.Save(stream);
+    }
+}
+
 /// <summary>A clock that only moves when the test says so.</summary>
 internal sealed class ManualClock(DateTimeOffset start) : TimeProvider
 {
@@ -107,11 +149,13 @@ internal sealed class ManualClock(DateTimeOffset start) : TimeProvider
 /// <summary>A temporary data folder with real services wired to it.</summary>
 internal sealed class TestEnvironment : IDisposable
 {
-    public TestEnvironment()
+    /// <param name="seed">Writes files into the data folder before the services load them.</param>
+    public TestEnvironment(Action<AppPaths>? seed = null)
     {
         Directory = Path.Combine(Path.GetTempPath(), "velotext-app-tests-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(Directory);
         Paths = new AppPaths(new AppOptions(StartedByWindows: false, Directory));
+        seed?.Invoke(Paths);
         Settings = new SettingsService(Paths, NullLogger<SettingsService>.Instance);
         Settings.Load();
         Library = new LibraryService(Paths, TimeProvider.System, NullLogger<LibraryService>.Instance);

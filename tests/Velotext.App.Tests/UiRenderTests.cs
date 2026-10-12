@@ -4,8 +4,6 @@
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Threading;
 using Velotext.App.Services;
 using Velotext.App.ViewModels;
 using Velotext.App.Views;
@@ -26,41 +24,20 @@ public sealed class UiRenderTests : IDisposable
 
     private static string? SnapshotFolder => Environment.GetEnvironmentVariable("VELOTEXT_UI_SNAPSHOTS");
 
-    private static void Pump()
-    {
-        var frame = new DispatcherFrame();
-        Dispatcher.CurrentDispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () => frame.Continue = false);
-        Dispatcher.PushFrame(frame);
-    }
-
     private static void Snapshot(Window window, string name)
     {
-        window.UpdateLayout();
-        Pump();
-        if (SnapshotFolder is not { Length: > 0 } folder || window.Content is not FrameworkElement content)
+        if (SnapshotFolder is { Length: > 0 } folder)
         {
-            return;
+            WindowSnapshot.Save(window, Path.Combine(folder, name + ".png"));
         }
-
-        Directory.CreateDirectory(folder);
-        var width = (int)Math.Ceiling(content.ActualWidth);
-        var height = (int)Math.Ceiling(content.ActualHeight);
-        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-        var background = new DrawingVisual();
-        using (var context = background.RenderOpen())
+        else
         {
-            context.DrawRectangle(window.Background ?? (Brush)Application.Current.Resources["Velotext.Bg"], null, new Rect(0, 0, width, height));
+            window.UpdateLayout();
+            WindowSnapshot.Pump();
         }
-
-        bitmap.Render(background);
-        bitmap.Render(content);
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(bitmap));
-        using var stream = File.Create(Path.Combine(folder, name + ".png"));
-        encoder.Save(stream);
     }
 
-    private static List<string> CaptureBindingErrors(Action action)
+    internal static List<string> CaptureBindingErrors(Action action)
     {
         var errors = new List<string>();
         var listener = new BindingErrorListener(errors);

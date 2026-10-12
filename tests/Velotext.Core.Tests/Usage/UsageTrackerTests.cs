@@ -263,6 +263,7 @@ public sealed class UsageTrackerTests
 
         Assert.Equal(200, report.Phrases.Single(p => p.PhraseId == known).CharactersSaved);
         Assert.Equal(0, report.Phrases.Single(p => p.PhraseId == gone).CharactersSaved);
+        Assert.Empty(tracker.Snapshot().Phrases[gone].Saved);
 
         // Schema 1 totals move to the last-use day first, then get the same estimate.
         var legacy = new UsageTracker(Stored(1, known, new PhraseUsage { LastUsedUtc = Build.Now, LegacyUseCount = 4 }), _ => 25);

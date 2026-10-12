@@ -120,7 +120,11 @@ public sealed class UsageTracker
                 var perUse = Math.Max(0, savedPerUse(id));
                 foreach (var (day, uses) in entry.Days)
                 {
-                    entry.Saved[day] = Clamp((long)uses * perUse);
+                    var estimate = Clamp((long)uses * perUse);
+                    if (estimate > 0)
+                    {
+                        entry.Saved[day] = estimate;
+                    }
                 }
             }
 
