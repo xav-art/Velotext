@@ -1,6 +1,8 @@
 // Velotext: process entry point (installer hooks, single instance, then the WPF application).
 // Copyright (c) 2026 Velotext contributors. Licensed under the MIT License.
 
+using System.Windows.Interop;
+using System.Windows.Media;
 using Velopack;
 using Velotext.App.Services;
 using Velotext.Platform.Windows.Lifecycle;
@@ -32,6 +34,9 @@ public static class Program
             return 0;
         }
 
+        // The window is plain controls and text, so drawing on the CPU looks the same and keeps the graphics
+        // driver (well over 100 MB once loaded) out of a process that spends most of the day in the tray.
+        RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
         var app = new App(options, paths, instance);
         app.InitializeComponent();
         return app.Run();

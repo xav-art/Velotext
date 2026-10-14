@@ -13,6 +13,7 @@ namespace Velotext.EndToEnd;
 /// Runs Velotext against real applications. It types into windows it opens itself, never sends email or
 /// chat messages, and stops at once when the user presses a key or clicks.
 /// Usage: Velotext.EndToEnd [--apps notepad,word,outlook,edge,chrome,newoutlook,teams] [--velotext path] [--countdown 10].
+/// Memory: Velotext.EndToEnd --memory [--velotext path] [--release-wait 135] [--phrases 300] (no typing).
 /// </summary>
 internal static class Program
 {
@@ -25,6 +26,13 @@ internal static class Program
         var apps = Option(args, "--apps")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             ?? ["notepad", "word", "outlook", "edge", "chrome"];
         var velotext = Option(args, "--velotext") ?? FindVelotext();
+        if (args.Contains("--memory", StringComparer.OrdinalIgnoreCase))
+        {
+            // Measures memory without typing, so it needs no countdown or input guard.
+            var wait = TimeSpan.FromSeconds(int.Parse(Option(args, "--release-wait") ?? "135", CultureInfo.InvariantCulture));
+            return MemoryProbe.Run(velotext, wait, int.Parse(Option(args, "--phrases") ?? "300", CultureInfo.InvariantCulture));
+        }
+
         var countdown = int.Parse(Option(args, "--countdown") ?? "10", CultureInfo.InvariantCulture);
 
         if (!Prompt.Countdown(

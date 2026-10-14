@@ -9,6 +9,7 @@ using Serilog;
 using Velotext.App.Services;
 using Velotext.App.ViewModels;
 using Velotext.App.Views;
+using Velotext.Core.Storage;
 using Velotext.Core.Usage;
 using Velotext.Platform.Windows.Lifecycle;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
@@ -18,6 +19,9 @@ namespace Velotext.App;
 /// <summary>
 /// The application. It wires every service by hand (no container needed for a single-window app), so
 /// the start-up order is explicit: logging, settings, library, theme, expansion, tray, window.
+/// The main window and its view model exist only while needed: they are built when the window first opens
+/// and released after it has been hidden for <see cref="WindowReleaseDelay"/>, because Velotext spends most
+/// of the day in the tray. Expansion never depends on them.
 /// </summary>
 public sealed partial class App : Application, IDisposable
 {
@@ -37,6 +41,8 @@ public sealed partial class App : Application, IDisposable
     private MainWindow? _mainWindow;
     private SettingsWindow? _settingsWindow;
     private AutostartService? _autostart;
+    private IdleReleaseTimer? _windowRelease;
+    private MainViewState? _viewState;
     private bool _exiting;
 
     /// <summary>Creates the application.</summary>
@@ -49,6 +55,9 @@ public sealed partial class App : Application, IDisposable
         _paths = paths ?? throw new ArgumentNullException(nameof(paths));
         _instance = instance ?? throw new ArgumentNullException(nameof(instance));
     }
+
+    /// <summary>How long the main window stays in memory after it hides; opening it within this time is instant.</summary>
+    internal static readonly TimeSpan WindowReleaseDelay = TimeSpan.FromMinutes(2);
 
     private static string ExecutablePath => Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "Velotext.exe");
 
@@ -106,12 +115,7 @@ public sealed partial class App : Application, IDisposable
             _autostart.Reconcile(ExecutablePath, _settings.Current.StartWithWindows);
         }
 
-        _mainViewModel = new MainViewModel(_library, _settings, _usage, _runtime, _dialogs, new WpfUiDispatcher(Dispatcher), time);
-        _mainViewModel.SettingsRequested += (_, _) => ShowSettings();
-        _mainWindow = new MainWindow(_mainViewModel);
-        _mainWindow.ApplyPlacement(_settings.Current.MainWindow);
-        _mainWindow.CloseRequested += OnMainWindowClosing;
-        MainWindow = _mainWindow;
+        _windowRelease = new IdleReleaseTimer(WindowReleaseDelay, () => ReleaseMainWindow("Hidden main window released"), new WpfUiDispatcher(Dispatcher), time);
 
         // Tell the user once per failure streak when the window is hidden; the window shows its own banner.
         var saveWarningShown = false;
@@ -121,7 +125,7 @@ public sealed partial class App : Application, IDisposable
             {
                 saveWarningShown = false;
             }
-            else if (state == SaveState.Failed && !saveWarningShown && _mainWindow is { IsVisible: false })
+            else if (state == SaveState.Failed && !saveWarningShown && _mainWindow is not { IsVisible: true })
             {
                 saveWarningShown = true;
                 _tray?.Show("Phrases not saved", "Velotext cannot save your phrases. Open Velotext for details.", NotificationKind.Warning);
@@ -134,6 +138,19 @@ public sealed partial class App : Application, IDisposable
         {
             ShowMainWindow();
         }
+        else
+        {
+            // Build the window once without showing it and release it at once: the first open of the day is
+            // then as quick as before, because the code and styles it needs are ready, but no window is kept.
+            Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+            {
+                if (_mainWindow is null)
+                {
+                    EnsureMainWindow();
+                    ReleaseMainWindow("Start-up warm-up finished");
+                }
+            });
+        }
 
         LogStarted(_logger!, typeof(App).Assembly.GetName().Version?.ToString(3) ?? "?", _options.StartedByWindows, IsInstalled);
     }
@@ -142,6 +159,7 @@ public sealed partial class App : Application, IDisposable
     public void Dispose()
     {
         SaveEverything();
+        _windowRelease?.Dispose();
         _mainViewModel?.Dispose();
         _runtime?.Dispose();
         _library?.Dispose();
@@ -154,6 +172,7 @@ public sealed partial class App : Application, IDisposable
         _usage = null;
         _tray = null;
         _theme = null;
+        _windowRelease = null;
         if (_loggers is not null)
         {
             LogStopped(_logger!);
@@ -207,7 +226,101 @@ public sealed partial class App : Application, IDisposable
             "Velotext still runs and your phrases are safe. If this happens again, open Settings and click Open log folder. Send the newest log file to your IT contact.");
     }
 
-    private void ShowMainWindow() => _mainWindow?.ShowAndActivate();
+    private void ShowMainWindow()
+    {
+        if (_exiting || _library is null)
+        {
+            return;
+        }
+
+        _windowRelease?.Cancel();
+        var watch = Stopwatch.StartNew();
+        var built = _mainWindow is null;
+        var window = EnsureMainWindow();
+        var buildTime = watch.ElapsedMilliseconds;
+        window.ShowAndActivate();
+        if (_options.Verbose)
+        {
+            LogWindowShown(_logger!, watch.ElapsedMilliseconds, built, buildTime);
+        }
+    }
+
+    /// <summary>Returns the main window, building it and its view model from the library when they were released.</summary>
+    private MainWindow EnsureMainWindow()
+    {
+        if (_mainWindow is { } existing)
+        {
+            return existing;
+        }
+
+        var viewModel = new MainViewModel(_library!, _settings!, _usage!, _runtime!, _dialogs!, new WpfUiDispatcher(Dispatcher), TimeProvider.System);
+        viewModel.SettingsRequested += (_, _) => ShowSettings();
+        if (_viewState is { } state)
+        {
+            viewModel.RestoreViewState(state);
+            _viewState = null;
+        }
+
+        var window = new MainWindow(viewModel);
+        window.ApplyPlacement(_settings!.Current.MainWindow);
+        window.CloseRequested += OnMainWindowClosing;
+        _mainViewModel = viewModel;
+        _mainWindow = window;
+        MainWindow = window;
+        return window;
+    }
+
+    /// <summary>
+    /// Closes the hidden main window for real and drops its view model, then compacts the heap once so the
+    /// memory goes back to Windows. The library service keeps every phrase; the next open builds a new
+    /// window that looks the same (place, size, selection, open folders).
+    /// </summary>
+    /// <param name="reason">Why the window is released, for the log.</param>
+    private void ReleaseMainWindow(string reason)
+    {
+        if (_exiting || _mainWindow is not { } window || window.IsVisible)
+        {
+            return;
+        }
+
+        if (_settingsWindow is not null)
+        {
+            // The settings window can be owned by the main window, and closing an owner closes it too.
+            _windowRelease?.Start();
+            return;
+        }
+
+        var viewModel = _mainViewModel!;
+        _viewState = viewModel.CaptureViewState();
+        window.CloseRequested -= OnMainWindowClosing;
+        window.Close();
+        viewModel.Dispose();
+        _mainWindow = null;
+        _mainViewModel = null;
+        MainWindow = null;
+
+        CompactWhenIdle(reason, new WeakReference(window));
+    }
+
+    /// <summary>
+    /// Once the UI thread is idle, collects and compacts the whole heap and gives the free memory back to
+    /// Windows. Used after start-up (loading leaves a lot of short-lived data behind, and a process that only
+    /// waits in the tray would keep it for hours) and after the window is released. It takes a few
+    /// milliseconds and never runs while the user works in the window.
+    /// </summary>
+    /// <param name="reason">What just finished, for the log.</param>
+    /// <param name="released">The released window, to log whether it was really freed (a leak would undo the saving).</param>
+    private void CompactWhenIdle(string reason, WeakReference? released = null) => Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, () =>
+    {
+        var watch = Stopwatch.StartNew();
+        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        LogCompacted(_logger!, reason, GC.GetTotalMemory(forceFullCollection: false) / 1024, watch.ElapsedMilliseconds);
+        if (released is not null)
+        {
+            LogReleasedWindowFreed(_logger!, !released.IsAlive);
+        }
+    });
 
     private void TogglePause() => _runtime?.SetPaused(!_runtime.IsPaused);
 
@@ -233,7 +346,15 @@ public sealed partial class App : Application, IDisposable
                 library =>
                 {
                     _library!.BackupNow();
-                    _mainViewModel!.ReplaceLibrary(library);
+                    if (_mainViewModel is { } main)
+                    {
+                        main.ReplaceLibrary(library);
+                    }
+                    else
+                    {
+                        // The window was released: the library service is the only copy to replace.
+                        _library.Update(LibrarySanitizer.Repair(library, TimeProvider.System.GetUtcNow()));
+                    }
                 },
                 gesture => _runtime!.DescribePauseHotkeyProblem(gesture),
                 OpenFile));
@@ -244,6 +365,10 @@ public sealed partial class App : Application, IDisposable
         {
             _runtime.PauseHotkeyConflictChanged -= conflictChanged;
             _settingsWindow = null;
+            if (_mainWindow is { IsVisible: false } && _windowRelease is { IsArmed: false })
+            {
+                _windowRelease.Start();
+            }
         };
         _settingsWindow.Show();
     }
@@ -259,6 +384,7 @@ public sealed partial class App : Application, IDisposable
         _mainViewModel?.CommitNow();
         SavePlacement();
         _mainWindow?.Hide();
+        _windowRelease?.Start();
         if (_settings is { Current.TrayHintShown: false })
         {
             _tray?.Show("Velotext is still running", "Velotext still runs in the notification area. To open it, click the Velotext icon. If you cannot see the icon, click Show hidden icons on the taskbar.", NotificationKind.Info);
@@ -321,6 +447,15 @@ public sealed partial class App : Application, IDisposable
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Velotext {Version} started (by Windows: {Autostart}, installed: {Installed}).")]
     private static partial void LogStarted(ILogger logger, string version, bool autostart, bool installed);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Main window shown in {Milliseconds} ms (built: {Built}, {BuildMilliseconds} ms of it to build).")]
+    private static partial void LogWindowShown(ILogger logger, long milliseconds, bool built, long buildMilliseconds);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "{Reason}: memory compacted in {Milliseconds} ms, managed heap now {Kilobytes} KB.")]
+    private static partial void LogCompacted(ILogger logger, string reason, long kilobytes, long milliseconds);
+
+    [LoggerMessage(Level = LogLevel.Debug, Message = "Released main window freed: {Freed}.")]
+    private static partial void LogReleasedWindowFreed(ILogger logger, bool freed);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Velotext stopped.")]
     private static partial void LogStopped(ILogger logger);

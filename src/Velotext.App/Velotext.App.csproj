@@ -14,7 +14,16 @@
     <PublishDocumentationFiles>false</PublishDocumentationFiles>
     <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
     <Description>Velotext: a per-user text expander for Windows. Type a short trigger and Velotext inserts the formatted phrase.</Description>
+    <!-- Memory: Velotext waits in the tray most of the day with a small heap, so it uses the plain blocking
+         collector (no background GC thread and its bookkeeping) and no profile-guided JIT instrumentation.
+         A full collection of this heap takes a few milliseconds. -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Compacts more eagerly instead of growing the heap when memory is fragmented (0 = off, 9 = most). -->
+    <RuntimeHostConfigurationOption Include="System.GC.ConserveMemory" Value="5" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="AngleSharp" />
     <PackageReference Include="CommunityToolkit.Mvvm" />

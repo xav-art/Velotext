@@ -112,6 +112,10 @@ internal static unsafe partial class Native
     [LibraryImport("user32.dll")]
     public static partial uint GetClipboardSequenceNumber();
 
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool PostMessageW(nint hwnd, uint msg, nint wParam, nint lParam);
+
     [LibraryImport("user32.dll")]
     public static partial nint SetThreadDpiAwarenessContext(nint context);
 

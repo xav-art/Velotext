@@ -76,6 +76,9 @@ public sealed partial class RichTextEditor : UserControl
         set => SetValue(EditorFontSizeProperty, value);
     }
 
+    /// <summary>Hands typing that is still waiting for the short pause to the phrase now, for example before the window closes.</summary>
+    public void Flush() => Push();
+
     /// <summary>Moves keyboard focus into the text.</summary>
     public void FocusText() => Editor.Focus();
 

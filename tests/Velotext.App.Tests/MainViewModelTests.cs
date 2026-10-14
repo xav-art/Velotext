@@ -48,6 +48,69 @@ public sealed class MainViewModelTests : IDisposable
     }
 
     [Fact]
+    public void View_state_brings_back_the_selection_and_open_folders_in_a_new_view_model()
+    {
+        MainViewState state;
+        Guid phraseId;
+        Guid innerId;
+        using (var first = _env.CreateMainViewModel())
+        {
+            var folder = FirstFolder(first);
+            first.SelectedNode = folder;
+            first.NewFolderCommand.Execute(null);
+            var inner = Assert.IsType<FolderViewModel>(first.SelectedNode);
+            inner.EndRename(cancel: false);
+            innerId = inner.Id;
+            first.CommitNow();
+            first.Recent.IsExpanded = false;
+            var phrase = folder.Children.OfType<PhraseViewModel>().First();
+            phraseId = phrase.Id;
+            first.OpenPhraseCommand.Execute(phrase);
+            inner.IsExpanded = true;
+
+            state = first.CaptureViewState();
+        }
+
+        Assert.Equal(phraseId, state.SelectedId);
+        Assert.DoesNotContain(ShortcutFolderViewModel.RecentId, state.ExpandedFolderIds);
+        Assert.Contains(ShortcutFolderViewModel.MostUsedId, state.ExpandedFolderIds);
+        Assert.Contains(innerId, state.ExpandedFolderIds);
+
+        using var second = _env.CreateMainViewModel();
+        var restoredInner = FirstFolder(second).Children.OfType<FolderViewModel>().Single();
+        Assert.False(restoredInner.IsExpanded);
+        Assert.True(second.Recent.IsExpanded);
+
+        second.RestoreViewState(state);
+
+        Assert.True(restoredInner.IsExpanded);
+        Assert.False(second.Recent.IsExpanded);
+        Assert.True(second.MostUsed.IsExpanded);
+        Assert.True(FirstFolder(second).IsExpanded);
+        Assert.Equal(phraseId, second.EditorPhrase?.Id);
+        Assert.True(second.SelectedNode!.IsSelected);
+    }
+
+    [Fact]
+    public void View_state_of_a_shortcut_selects_its_phrase_and_skips_deleted_nodes()
+    {
+        using var vm = _env.CreateMainViewModel();
+        var phrase = FirstFolder(vm).Children.OfType<PhraseViewModel>().First();
+        _env.Usage.RecordUse(phrase.Id, 10);
+        var shortcut = Assert.IsType<ShortcutViewModel>(Assert.Single(vm.Recent.Items));
+        vm.SelectedNode = shortcut;
+
+        var state = vm.CaptureViewState();
+        Assert.Equal(phrase.Id, state.SelectedId);
+
+        vm.SelectedNode = null;
+        vm.RestoreViewState(new MainViewState(Guid.NewGuid(), new HashSet<Guid>()));
+        Assert.Null(vm.SelectedNode);
+        Assert.False(FirstFolder(vm).IsExpanded);
+        Assert.Throws<ArgumentNullException>(() => vm.RestoreViewState(null!));
+    }
+
+    [Fact]
     public void New_phrase_is_added_with_an_empty_trigger_and_committed()
     {
         using var vm = _env.CreateMainViewModel();

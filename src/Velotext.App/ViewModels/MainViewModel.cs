@@ -25,6 +25,14 @@ public enum DropPosition
     Inside = 2,
 }
 
+/// <summary>
+/// What the user sees in the tree: the selected node and the open folders. It lets a newly built window
+/// (after the hidden one was released to save memory) look the way the user left it.
+/// </summary>
+/// <param name="SelectedId">Id of the selected folder or phrase (a shortcut's phrase), or <c>null</c>.</param>
+/// <param name="ExpandedFolderIds">Ids of the folders that are open, including "Recently used" and "Most used".</param>
+public sealed record MainViewState(Guid? SelectedId, IReadOnlySet<Guid> ExpandedFolderIds);
+
 /// <summary>Pauses and resumes expansion.</summary>
 public interface IPauseControl
 {
@@ -259,6 +267,35 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _dirty = false;
         _library.Update(BuildLibrary());
         PhraseCount = _phrases.Count;
+    }
+
+    /// <summary>Captures the selection and the open folders.</summary>
+    /// <returns>The state, for <see cref="RestoreViewState"/>.</returns>
+    public MainViewState CaptureViewState()
+    {
+        var expanded = AllNodes().Where(n => n.IsExpanded).Select(n => n.Id).ToHashSet();
+        var selected = SelectedNode is ShortcutViewModel shortcut ? shortcut.Target.Id : SelectedNode?.Id;
+        return new MainViewState(selected, expanded);
+    }
+
+    /// <summary>
+    /// Opens the same folders and selects the same node as when <paramref name="state"/> was captured. Nodes
+    /// deleted since then are skipped; folders that did not exist then keep their default.
+    /// </summary>
+    /// <param name="state">A state from <see cref="CaptureViewState"/>.</param>
+    public void RestoreViewState(MainViewState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        var nodes = AllNodes().ToList();
+        foreach (var node in nodes.Where(n => n is FolderViewModel or ShortcutFolderViewModel))
+        {
+            node.IsExpanded = state.ExpandedFolderIds.Contains(node.Id);
+        }
+
+        if (state.SelectedId is { } id && nodes.FirstOrDefault(n => n.Id == id) is { } selected)
+        {
+            Select(selected);
+        }
     }
 
     /// <summary>Replaces the whole library, for example with a backup.</summary>
@@ -931,6 +968,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         node.IsVisible = true;
         node.IsSelected = true;
         SelectedNode = node;
+    }
+
+    /// <summary>Every folder and phrase in the tree, plus the shortcut folders themselves (not their rows).</summary>
+    private IEnumerable<TreeNodeViewModel> AllNodes()
+    {
+        static IEnumerable<TreeNodeViewModel> Walk(IEnumerable<TreeNodeViewModel> nodes)
+        {
+            foreach (var node in nodes)
+            {
+                yield return node;
+                if (node is FolderViewModel folder)
+                {
+                    foreach (var child in Walk(folder.Children))
+                    {
+                        yield return child;
+                    }
+                }
+            }
+        }
+
+        return Walk(TreeRoots);
     }
 
     private IEnumerable<PhraseViewModel> AllPhrases()

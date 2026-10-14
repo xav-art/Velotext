@@ -165,6 +165,29 @@ public sealed class UiRenderTests : IDisposable
     }
 
     [Fact]
+    public void Closing_the_main_window_keeps_the_last_typing() => WpfThread.Run(() =>
+    {
+        // The app closes the hidden window for real to save memory; typing still in the editor's short wait must not be lost.
+        using var themeService = new ThemeService(Application.Current);
+        themeService.Apply(AppTheme.Dark);
+        using var vm = _env.CreateMainViewModel();
+        var phrase = vm.TreeRoots.OfType<FolderViewModel>().First().Children.OfType<PhraseViewModel>().First();
+        vm.SelectedNode = phrase;
+        var window = new MainWindow(vm) { Left = -20000, Top = -20000, ShowActivated = false, Width = 1120, Height = 740 };
+        window.Show();
+        window.UpdateLayout();
+        WindowSnapshot.Pump();
+
+        var document = window.ContentEditor.Editor.Document;
+        new System.Windows.Documents.TextRange(document.ContentEnd, document.ContentEnd).Text = " Closing marker";
+        Assert.DoesNotContain("Closing marker", Core.RichText.PlainTextRenderer.Render(phrase.Content), StringComparison.Ordinal);
+
+        window.Close();
+
+        Assert.Contains("Closing marker", Core.RichText.PlainTextRenderer.Render(phrase.Content), StringComparison.Ordinal);
+    });
+
+    [Fact]
     public void Main_window_reopens_where_it_was_and_ignores_places_off_screen() => WpfThread.Run(() =>
     {
         using var themeService = new ThemeService(Application.Current);

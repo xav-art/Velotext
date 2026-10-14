@@ -111,6 +111,17 @@ public sealed partial class MainWindow : Window
     }
 
     /// <inheritdoc />
+    protected override void OnClosed(EventArgs e)
+    {
+        // The window can close while Velotext keeps running (it is released when hidden for a while), so it
+        // saves the last typing and lets go of the view model, which is dropped with it.
+        ContentEditor.Flush();
+        _viewModel.FocusPhraseNameRequested -= OnFocusPhraseName;
+        _viewModel.FocusNodeRequested -= OnFocusNode;
+        base.OnClosed(e);
+    }
+
+    /// <inheritdoc />
     protected override void OnKeyDown(KeyEventArgs e)
     {
         ArgumentNullException.ThrowIfNull(e);
